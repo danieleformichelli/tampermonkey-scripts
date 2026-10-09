@@ -103,8 +103,6 @@
     }
     li[class*="listItemCompact"] [class*="MetadataContainer"]:not(:has(> .gh-pr-reviewers))::after { margin-left: -16px; }
     li > .gh-pr-opener { display: none !important; }
-    /* comfortable view already shows the author's avatar next to their name under the title */
-    li:not([class*="listItemCompact"]) .gh-pr-opener { display: none !important; }
     .gh-pr-reviewers { align-self: center; order: 9999; }
     /* compact cells are a fixed 72px with centred content, so the comment count before us leaves
        ~20px empty on its right; pull the reviewers into it (the 8px column gap still separates them) */
