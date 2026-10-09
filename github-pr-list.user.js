@@ -28,22 +28,10 @@
   }
   const isIgnored = (name) => ignoreList.some((entry) => name.toLowerCase().includes(String(entry).toLowerCase()));
   const STATUS = {
-    approved: {
-      color: "var(--fgColor-success, #2da44e)",
-      label: "approved these changes",
-    },
-    changes: {
-      color: "var(--fgColor-danger, #cf222e)",
-      label: "requested changes",
-    },
-    pending: {
-      color: "var(--fgColor-attention, #d29922)",
-      label: "review pending",
-    },
-    commented: {
-      color: "var(--fgColor-muted, #8b949e)",
-      label: "left review comments",
-    },
+    approved: { color: "var(--fgColor-success, #2da44e)", label: "approved these changes" },
+    changes: { color: "var(--fgColor-danger, #cf222e)", label: "requested changes" },
+    pending: { color: "var(--fgColor-attention, #d29922)", label: "review pending" },
+    commented: { color: "var(--fgColor-muted, #8b949e)", label: "left review comments" },
   };
 
   // ---- context --------------------------------------------------------------
@@ -100,10 +88,7 @@
     if (cache.has(num)) return Promise.resolve(cache.get(num));
     if (inflight.has(num)) return inflight.get(num);
 
-    const p = fetch(location.origin + partialUrl(num), {
-      credentials: "same-origin",
-      headers: { Accept: "text/html" },
-    })
+    const p = fetch(location.origin + partialUrl(num), { credentials: "same-origin", headers: { Accept: "text/html" } })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.text();
@@ -319,10 +304,7 @@
         .slice(MAX_AVATARS)
         .map((r) => r.name)
         .join(", ");
-      Object.assign(more.style, {
-        fontSize: "11px",
-        color: "var(--fgColor-muted, #8b949e)",
-      });
+      Object.assign(more.style, { fontSize: "11px", color: "var(--fgColor-muted, #8b949e)" });
       cell.appendChild(more);
     }
   }
