@@ -23,12 +23,26 @@
   const CONCURRENCY = 25; // parallel sidebar fetches (one PR-list page)
   const FALLBACK_TO_ASSIGNEES = false; // never show assignees again once reviewers are the point
   const IGNORE_REVIEWERS = [/cursor/i, /copilot/i, /tractive-guardian/i]; // reviewer logins/teams to drop
+  // `icon` is an official Primer Octicon path (MIT), drawn as a badge on the avatar's corner for
+  // states the ring colour alone doesn't tell apart (both are muted grey)
   const STATUS = {
     approved: { color: 'var(--fgColor-success, #2da44e)', label: 'approved these changes' },
     changes: { color: 'var(--fgColor-danger, #cf222e)', label: 'requested changes' },
     pending: { color: 'var(--fgColor-attention, #d29922)', label: 'review pending' },
-    commented: { color: 'var(--fgColor-muted, #8b949e)', label: 'left review comments' },
+    commented: {
+      color: 'var(--fgColor-muted, #8b949e)',
+      label: 'left review comments',
+      // octicon comment-16
+      icon: 'M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z',
+    },
+    dismissed: {
+      color: 'var(--fgColor-muted, #8b949e)',
+      label: 'review dismissed',
+      // octicon x-16
+      icon: 'M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z',
+    },
   };
+  const BADGE_SIZE = 13; // px, status octicon badge on the avatar's bottom-right corner
 
   // ---- context --------------------------------------------------------------
   const DEBUG = false; // set true to log per-row activity to the console
@@ -131,7 +145,9 @@
       const tip = block && block.querySelector('tool-tip');
       const text = tip ? tip.textContent.toLowerCase() : '';
       let status = 'pending';
-      if (/approved/.test(text)) status = 'approved';
+      // dismissed first: a dismissed approval's tooltip may still mention "approved"
+      if (/dismissed/.test(text)) status = 'dismissed';
+      else if (/approved/.test(text)) status = 'approved';
       else if (/requested changes|changes requested/.test(text)) status = 'changes';
       else if (/left review comments|commented/.test(text)) status = 'commented';
       else if (/awaiting|requested review/.test(text)) status = 'pending';
@@ -302,6 +318,7 @@
     a.rel = 'noopener';
     a.title = `${r.name} - ${s.label}`;
     Object.assign(a.style, {
+      position: 'relative', // anchors the status badge
       display: 'inline-flex',
       alignItems: 'center',
       flexShrink: '0',
@@ -341,11 +358,46 @@
       });
       a.appendChild(span);
     }
+    if (s.icon) a.appendChild(statusBadge(s.icon));
     return a;
+  }
+
+  function statusBadge(d) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    for (const [key, value] of Object.entries({
+      viewBox: '0 0 16 16',
+      width: String(BADGE_SIZE),
+      height: String(BADGE_SIZE),
+      fill: 'currentColor',
+      'aria-hidden': 'true',
+      focusable: 'false',
+    })) {
+      svg.setAttribute(key, value);
+    }
+    Object.assign(svg.style, {
+      position: 'absolute',
+      right: '-4px',
+      bottom: '-4px',
+      boxSizing: 'border-box',
+      padding: '1px',
+      borderRadius: '50%',
+      background: 'var(--bgColor-default, #fff)',
+      border: '1px solid var(--borderColor-default, #d0d7de)',
+      color: 'var(--fgColor-muted, #8b949e)',
+      pointerEvents: 'none',
+    });
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', d);
+    svg.appendChild(path);
+    return svg;
   }
 
   function renderCell(cell, reviewers) {
     cell.textContent = '';
+    // dismissed reviews matter least, so they're the first to fall into the "+N" overflow;
+    // sort is stable, so everyone else keeps the sidebar's order
+    reviewers = [...reviewers].sort((a, b) => (a.status === 'dismissed') - (b.status === 'dismissed'));
     for (const r of reviewers.slice(0, MAX_AVATARS)) cell.appendChild(avatarNode(r));
     const hidden = reviewers.length - MAX_AVATARS;
     if (hidden > 0) {
