@@ -4,7 +4,7 @@
 // @version      1.0.1
 // @description  Show opener avatar on the left, and reviewers in place of the assignees.
 // @author       Daniele Formichelli
-// @match        https://github.com/*/*/pulls*
+// @match        https://github.com/*
 // @icon         https://github.githubassets.com/favicons/favicon.svg
 // @run-at       document-idle
 // @grant        none
@@ -48,12 +48,27 @@
 
   // ---- context --------------------------------------------------------------
   const DEBUG = false; // set true to log per-row activity to the console
-  const [owner, repo] = location.pathname.split('/').filter(Boolean);
-  if (!owner || !repo) return;
-  window.__ghPrReviewers = { version: '1.0.1', owner, repo, loadedAt: Date.now() };
-  if (DEBUG) console.log('[gh-pr-reviewers] loaded for', owner + '/' + repo);
+  // GitHub navigates in-page (e.g. commits/branches -> Pull requests), so the script runs on every
+  // page and re-reads the repo from the URL on each pass; it only acts on a repo's PR list.
+  const PULLS_PATH = /^\/([^/]+)\/([^/]+)\/pulls(?:\/|$)/;
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pullHref = new RegExp(`^/${esc(owner)}/${esc(repo)}/pull/(\\d+)/?$`);
+  let owner = null;
+  let repo = null;
+  let pullHref = null;
+
+  // returns false when the current page isn't a repo PR list
+  function syncRepo() {
+    const m = PULLS_PATH.exec(location.pathname);
+    if (!m) return false;
+    if (m[1] === owner && m[2] === repo) return true;
+    owner = m[1];
+    repo = m[2];
+    pullHref = new RegExp(`^/${esc(owner)}/${esc(repo)}/pull/(\\d+)/?$`);
+    loadStore();
+    window.__ghPrReviewers = { version: '1.0.1', owner, repo, loadedAt: Date.now() };
+    if (DEBUG) console.log('[gh-pr-reviewers] now on', owner + '/' + repo);
+    return true;
+  }
 
   // a stylesheet survives React replacing nodes or resetting the row's className.
   // - assignees are an alignRight item (comfortable) or a fixed-width metadataAssignees column
@@ -107,32 +122,42 @@
       font-size: 10px; font-weight: 600; line-height: 1; pointer-events: none;
     }
   `;
-  (document.head || document.documentElement).appendChild(hideStyle);
+  // attached by onUrlChange on the first visit to a PR list
 
   // ---- fetch reviewers from the same-origin sidebar partial -----------------
+  // keyed "owner/repo#num": in-page navigation can switch repos while fetches are in flight.
+  // Cleared on every URL change, so returning to the list refetches instead of showing stale data.
   const cache = new Map();
   const inflight = new Map();
+  const cacheKey = (num) => `${owner}/${repo}#${num}`;
 
   // last session's results, kept so reviewers can paint before the network answers
-  const STORE_KEY = `gh-pr-reviewers:${owner}/${repo}`;
+  let storeKey = null;
   let store = {};
-  try {
-    store = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {};
-  } catch (err) {
-    store = {};
+  const saveTimers = new Map(); // storeKey -> timer
+  function loadStore() {
+    storeKey = `gh-pr-reviewers:${owner}/${repo}`;
+    try {
+      store = JSON.parse(localStorage.getItem(storeKey) || '{}') || {};
+    } catch (err) {
+      store = {};
+    }
   }
-  let saveTimer = null;
-  function persist(num, reviewers) {
-    store[num] = { reviewers, ts: Date.now() };
-    if (saveTimer) return;
-    saveTimer = setTimeout(() => {
-      saveTimer = null;
-      try {
-        localStorage.setItem(STORE_KEY, JSON.stringify(store));
-      } catch (err) {
-        /* storage may be full/blocked; cache is best-effort */
-      }
-    }, 500);
+  // takes the repo's key and store explicitly: the fetch may finish after navigating to another repo
+  function persist(key, target, num, reviewers) {
+    target[num] = { reviewers, ts: Date.now() };
+    if (saveTimers.has(key)) return;
+    saveTimers.set(
+      key,
+      setTimeout(() => {
+        saveTimers.delete(key);
+        try {
+          localStorage.setItem(key, JSON.stringify(target));
+        } catch (err) {
+          /* storage may be full/blocked; cache is best-effort */
+        }
+      }, 500),
+    );
   }
   function cachedReviewers(num) {
     const entry = store[num];
@@ -144,8 +169,11 @@
     encodeURIComponent('pull_requests/sidebar/show/reviewers');
 
   function fetchReviewers(num) {
-    if (cache.has(num)) return Promise.resolve(cache.get(num));
-    if (inflight.has(num)) return inflight.get(num);
+    const key = cacheKey(num);
+    if (cache.has(key)) return Promise.resolve(cache.get(key));
+    if (inflight.has(key)) return inflight.get(key);
+    const repoStoreKey = storeKey;
+    const repoStore = store;
 
     const p = fetch(partialUrl(num), { credentials: 'same-origin', headers: { Accept: 'text/html' } })
       .then((r) => {
@@ -154,19 +182,19 @@
       })
       .then(parseReviewers)
       .then((list) => {
-        cache.set(num, list);
-        persist(num, list);
-        if (DEBUG) console.log('[gh-pr-reviewers] #' + num, list.length, 'reviewer(s)', list.map((r) => r.name + ':' + r.status));
+        cache.set(key, list);
+        persist(repoStoreKey, repoStore, num, list);
+        if (DEBUG) console.log('[gh-pr-reviewers] ' + key, list.length, 'reviewer(s)', list.map((r) => r.name + ':' + r.status));
         return list;
       })
       .catch((err) => {
-        console.warn('[gh-pr-reviewers] fetch failed for #' + num, err);
-        cache.set(num, null); // don't hammer a failing endpoint on every mutation
+        console.warn('[gh-pr-reviewers] fetch failed for ' + key, err);
+        cache.set(key, null); // don't hammer a failing endpoint on every mutation
         return null;
       })
-      .finally(() => inflight.delete(num));
+      .finally(() => inflight.delete(key));
 
-    inflight.set(num, p);
+    inflight.set(key, p);
     return p;
   }
 
@@ -518,7 +546,7 @@
   let bar = null;
   let barSig = null;
 
-  const reviewersOf = (num) => cache.get(num) || cachedReviewers(num) || [];
+  const reviewersOf = (num) => cache.get(cacheKey(num)) || cachedReviewers(num) || [];
 
   function ensureBar() {
     if (bar && bar.isConnected) return bar;
@@ -566,6 +594,7 @@
   }
 
   function updatePending() {
+    if (!syncRepo()) return; // navigated away before the timer fired
     const rows = collectRows();
     const counts = new Map(); // name -> { reviewer, count }
     for (const num of rows.keys()) {
@@ -629,7 +658,20 @@
     return rows;
   }
 
+  let lastHref = null;
   function run() {
+    if (!syncRepo()) {
+      if (bar && bar.isConnected) bar.remove(); // in case GitHub kept the container on leaving the list
+      lastHref = null;
+      return;
+    }
+    if (location.href !== lastHref) {
+      // a new list (or the same one revisited): refetch so reviewers aren't stale; the stored
+      // copy still paints instantly while the fetches run. The bar's filter is per page, so reset it.
+      lastHref = location.href;
+      cache.clear();
+      activeFilter = null;
+    }
     const rows = collectRows();
     if (DEBUG) console.log('[gh-pr-reviewers] run: matched', rows.size, 'PR row(s)', [...rows.keys()]);
     if (rows.size === 0 && DEBUG) {
@@ -660,16 +702,47 @@
     schedulePending();
   }
 
+  // ---- lifecycle ------------------------------------------------------------
+  // Off the PR list the script only listens for URL changes: no DOM observer, no stylesheet.
+  // The observer is attached on entering a PR list and disconnected on leaving it.
   let pending = false;
-  const observer = new MutationObserver(() => {
+  function queueRun() {
     if (pending) return;
     pending = true;
     setTimeout(() => {
       pending = false;
       run();
     }, 300);
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
+  }
 
-  run();
+  let observer = null;
+  let lastUrl = null;
+  function onUrlChange() {
+    if (location.href === lastUrl) return;
+    lastUrl = location.href;
+    if (PULLS_PATH.test(location.pathname)) {
+      if (!hideStyle.isConnected) (document.head || document.documentElement).appendChild(hideStyle);
+      if (!observer) {
+        observer = new MutationObserver(queueRun);
+        observer.observe(document.body, { childList: true, subtree: true });
+      }
+      queueRun(); // the list may already be rendered, or render without further mutations
+    } else if (observer) {
+      observer.disconnect();
+      observer = null;
+      run(); // tidies up: removes the bar, forgets the last list URL
+    }
+  }
+
+  // GitHub navigates with history.pushState, which fires no event of its own. The Navigation API
+  // reports it; where that's missing, fall back to a cheap once-a-second URL comparison.
+  if (window.navigation && typeof window.navigation.addEventListener === 'function') {
+    window.navigation.addEventListener('currententrychange', onUrlChange);
+  } else {
+    setInterval(onUrlChange, 1000);
+  }
+  window.addEventListener('popstate', onUrlChange);
+  document.addEventListener('turbo:load', onUrlChange);
+
+  onUrlChange();
 })();
