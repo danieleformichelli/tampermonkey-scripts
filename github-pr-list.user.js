@@ -14,12 +14,12 @@
   'use strict';
 
   // ---- config ---------------------------------------------------------------
-  const MAX_AVATARS = 4; // avatars before a "+N" badge
+  const MAX_AVATARS = 5; // avatars before a "+N" badge
   const AVATAR_SIZE = 20; // px
   const AVATAR_GAP = 8; // px between reviewer avatars; the 2px status ring eats into it on both sides
-  const MORE_WIDTH = 24; // px reserved for the "+N" badge
-  // fixed so every row's cell is the same width and the metadata columns line up across rows
-  const CELL_WIDTH = MAX_AVATARS * AVATAR_SIZE + MAX_AVATARS * AVATAR_GAP + MORE_WIDTH;
+  // fixed so every row's cell is the same width and the metadata columns line up across rows;
+  // the "+N" overflow takes the last avatar slot, so no extra room is reserved for it
+  const CELL_WIDTH = MAX_AVATARS * AVATAR_SIZE + (MAX_AVATARS - 1) * AVATAR_GAP;
   const CONCURRENCY = 25; // parallel sidebar fetches (one PR-list page)
   const FALLBACK_TO_ASSIGNEES = false; // never show assignees again once reviewers are the point
   // machine users: regular accounts run by automation, which nothing in the markup tells apart from
@@ -75,8 +75,8 @@
   //   (compact): hide them next to our cell, the opener avatar already says who owns the PR
   // - switching layouts makes React append the new layout's metadata after our cell, so `order`
   //   keeps the cell last without moving the node
-  // - compact view lays the cell out on a single line, so it centers; comfortable view spans
-  //   title + description, so pin the cell to the title line (offset measured in alignToTitle)
+  // - the cell centres vertically like GitHub's own metadata items, so it lines up with the
+  //   comment count in both layouts
   const hideStyle = document.createElement('style');
   hideStyle.textContent = `
     li.gh-pr-reviewers-row [class*="alignRight"],
@@ -87,10 +87,9 @@
     /* comfortable view already shows the author's avatar next to their name under the title */
     li:not([class*="listItemCompact"]) .gh-pr-opener { display: none !important; }
     .gh-pr-reviewers { align-self: center; order: 9999; }
-    li:not([class*="listItemCompact"]) .gh-pr-reviewers {
-      align-self: flex-start;
-      margin-top: var(--gh-pr-reviewers-offset, 10px);
-    }
+    /* compact cells are a fixed 72px with centred content, so the comment count before us leaves
+       ~20px empty on its right; pull the reviewers into it (the 8px column gap still separates them) */
+    li[class*="listItemCompact"] .gh-pr-reviewers { margin-left: -16px !important; }
 
     /* "Pending reviews by" bar; a data attribute (not a class) hides rows, React resets className */
     li[data-gh-pr-filtered] { display: none !important; }
@@ -279,7 +278,7 @@
         width: `${CELL_WIDTH}px`,
         flexShrink: '0',
         height: `${AVATAR_SIZE}px`,
-        paddingLeft: '2px', // keep the first avatar's ring from being clipped
+        padding: '0 2px', // room for the 2px status ring on the outer avatars
         boxSizing: 'content-box',
         marginLeft: 'auto',
       });
@@ -366,28 +365,6 @@
     a.appendChild(img);
 
     host.insertBefore(a, host.firstChild);
-  }
-
-  // comfortable rows: centre the reviewers cell on the title's first line (the opener is hidden
-  // there, so the title text is the reference). Every row shares the same geometry, so one
-  // measurement drives a CSS variable for all.
-  let titleOffset = null;
-  function alignToTitle(rows) {
-    for (const row of rows) {
-      if (/listItemCompact/.test(row.className)) continue;
-      const title = row.querySelector('[data-listview-item-title-container] h3');
-      const meta = row.querySelector('[class*="MetadataContainer"]');
-      if (!title || !meta) continue;
-      const line = title.getClientRects()[0]; // first line only, long titles wrap
-      const m = meta.getBoundingClientRect();
-      if (!line || !line.height || !m.height) continue;
-      const offset = Math.round(line.top + line.height / 2 - AVATAR_SIZE / 2 - m.top);
-      if (offset !== titleOffset) {
-        titleOffset = offset;
-        document.documentElement.style.setProperty('--gh-pr-reviewers-offset', `${offset}px`);
-      }
-      return;
-    }
   }
 
   // clicking a reviewer searches this repo's open PRs: still waiting on them if their review is
@@ -498,16 +475,30 @@
     // dismissed reviews matter least, so they're the first to fall into the "+N" overflow;
     // sort is stable, so everyone else keeps the sidebar's order
     reviewers = [...reviewers].sort((a, b) => (a.status === 'dismissed') - (b.status === 'dismissed'));
-    for (const r of reviewers.slice(0, MAX_AVATARS)) cell.appendChild(avatarNode(r));
-    const hidden = reviewers.length - MAX_AVATARS;
-    if (hidden > 0) {
+    // up to MAX_AVATARS fit; beyond that the last slot becomes a "+N" circle
+    const shown = reviewers.length > MAX_AVATARS ? reviewers.slice(0, MAX_AVATARS - 1) : reviewers;
+    for (const r of shown) cell.appendChild(avatarNode(r));
+    const rest = reviewers.slice(shown.length);
+    if (rest.length) {
       const more = document.createElement('span');
-      more.textContent = `+${hidden}`;
-      more.title = reviewers
-        .slice(MAX_AVATARS)
-        .map((r) => r.name)
-        .join(', ');
-      Object.assign(more.style, { fontSize: '11px', lineHeight: `${AVATAR_SIZE}px`, color: 'var(--fgColor-muted, #8b949e)' });
+      more.textContent = `+${rest.length}`;
+      more.title = rest.map((r) => r.name).join(', ');
+      Object.assign(more.style, {
+        width: `${AVATAR_SIZE}px`,
+        height: `${AVATAR_SIZE}px`,
+        flexShrink: '0',
+        borderRadius: '50%',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxShadow: '0 0 0 2px var(--borderColor-default, #d0d7de)',
+        background: 'var(--bgColor-muted, #f6f8fa)',
+        fontSize: '10px',
+        fontWeight: '600',
+        lineHeight: 'normal',
+        color: 'var(--fgColor-muted, #8b949e)',
+        cursor: 'default',
+      });
       cell.appendChild(more);
     }
   }
@@ -698,7 +689,6 @@
         }),
       );
     }
-    alignToTitle(rows.values());
     schedulePending();
   }
 
