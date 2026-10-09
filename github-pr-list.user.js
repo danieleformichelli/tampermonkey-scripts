@@ -69,6 +69,8 @@
     [class*="MetadataContainer"]:has(> .gh-pr-reviewers) > [class*="alignRight"],
     [class*="MetadataContainer"]:has(> .gh-pr-reviewers) > [class*="metadataAssignees"] { display: none !important; }
     li > .gh-pr-opener { display: none !important; }
+    /* comfortable view already shows the author's avatar next to their name under the title */
+    li:not([class*="listItemCompact"]) .gh-pr-opener { display: none !important; }
     .gh-pr-reviewers { align-self: center; order: 9999; }
     li:not([class*="listItemCompact"]) .gh-pr-reviewers {
       align-self: flex-start;
@@ -338,19 +340,20 @@
     host.insertBefore(a, host.firstChild);
   }
 
-  // comfortable rows: line the reviewers cell up with the opener on the title line.
-  // Every row shares the same geometry, so one measurement drives a CSS variable for all.
+  // comfortable rows: centre the reviewers cell on the title's first line (the opener is hidden
+  // there, so the title text is the reference). Every row shares the same geometry, so one
+  // measurement drives a CSS variable for all.
   let titleOffset = null;
   function alignToTitle(rows) {
     for (const row of rows) {
       if (/listItemCompact/.test(row.className)) continue;
-      const opener = row.querySelector('.gh-pr-opener');
+      const title = row.querySelector('[data-listview-item-title-container] h3');
       const meta = row.querySelector('[class*="MetadataContainer"]');
-      if (!opener || !meta) continue;
-      const o = opener.getBoundingClientRect();
+      if (!title || !meta) continue;
+      const line = title.getClientRects()[0]; // first line only, long titles wrap
       const m = meta.getBoundingClientRect();
-      if (!o.height || !m.height) continue;
-      const offset = Math.round(o.top - m.top);
+      if (!line || !line.height || !m.height) continue;
+      const offset = Math.round(line.top + line.height / 2 - AVATAR_SIZE / 2 - m.top);
       if (offset !== titleOffset) {
         titleOffset = offset;
         document.documentElement.style.setProperty('--gh-pr-reviewers-offset', `${offset}px`);
