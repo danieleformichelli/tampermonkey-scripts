@@ -362,13 +362,33 @@
     }
   }
 
+  // clicking a reviewer searches this repo's open PRs: still waiting on them if their review is
+  // pending, otherwise the ones they reviewed. Teams can only be requested, never review.
+  function reviewerSearch(r) {
+    const team = /^\/orgs\/([^/]+)\/teams\/([^/]+)/.exec(r.href || '');
+    let filter;
+    let what;
+    if (team) {
+      filter = `team-review-requested:${team[1]}/${team[2]}`;
+      what = 'open PRs requesting review from this team';
+    } else if (r.status === 'pending') {
+      filter = `review-requested:${r.name}`;
+      what = `open PRs waiting on ${r.name}'s review`;
+    } else {
+      filter = `reviewed-by:${r.name}`;
+      what = `open PRs reviewed by ${r.name}`;
+    }
+    const url = new URL(`/${owner}/${repo}/pulls`, location.origin);
+    url.searchParams.set('q', `is:pr is:open sort:updated-desc ${filter}`);
+    return { href: url.href, what };
+  }
+
   function avatarNode(r) {
     const s = STATUS[r.status] || STATUS.pending;
+    const search = reviewerSearch(r);
     const a = document.createElement('a');
-    a.href = r.href || '#';
-    a.target = '_blank';
-    a.rel = 'noopener';
-    a.title = `${r.name} - ${s.label}`;
+    a.href = search.href;
+    a.title = `${r.name} - ${s.label}\nClick to show ${search.what}`;
     Object.assign(a.style, {
       position: 'relative', // anchors the status badge
       display: 'inline-flex',
