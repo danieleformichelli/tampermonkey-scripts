@@ -101,6 +101,13 @@
     /* compact cells are a fixed 72px with centred content, so the comment count before us leaves
        ~20px empty on its right; pull the reviewers into it (the 8px column gap still separates them) */
     li[class*="listItemCompact"] .gh-pr-reviewers { margin-left: -16px !important; }
+    /* comfortable view sizes the comment count to its digits, and the fixed-width reviewers cell
+       right-aligns it, so the icons zig-zag across rows; a fixed, left-aligned box lines them up
+       (fits up to 3 digits, wider counts just grow) */
+    li:not([class*="listItemCompact"]) [class*="MetadataContainer"] > :has(> .octicon-comment) {
+      min-width: 44px;
+      justify-content: flex-start;
+    }
 
     /* "Pending reviews by" bar; a data attribute (not a class) hides rows, React resets className */
     li[data-gh-pr-filtered] { display: none !important; }
