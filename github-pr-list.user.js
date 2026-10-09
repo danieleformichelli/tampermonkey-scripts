@@ -2,7 +2,7 @@
 // @name         GitHub PR list — Show opener avatar on the left, and reviewers instead of assignees on the right
 // @namespace    https://github.com/danieleformichelli/tampermonkey-scripts
 // @version      1.0.0
-// @description  Show opener avatar on the left, and reviewers in place of the assignees.
+// @description  Show opener avatar on the left, and reviewers in place of the assignees. Only works in "Comfortable display density".
 // @author       Daniele Formichelli
 // @match        https://github.com/*/*/pulls*
 // @icon         https://github.githubassets.com/favicons/favicon.svg
@@ -43,10 +43,15 @@
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pullHref = new RegExp(`^/${esc(owner)}/${esc(repo)}/pull/(\\d+)/?$`);
 
-  // hide assignees in flagged rows; a stylesheet survives React replacing the node
+  // Hide assignees. Default: hide them everywhere on the list (layout-agnostic,
+  // survives React re-renders). With FALLBACK on, scope to rows that got reviewers.
+  // Kept as separate rules so an unsupported `:has()` cannot invalidate the rest.
   const hideStyle = document.createElement('style');
-  hideStyle.textContent = 'li.gh-pr-reviewers-row [class*="alignRight"]{display:none !important}';
-  (document.head || document.documentElement).appendChild(hideStyle);
+  const assigneeSel = 'button[aria-label^="Filter by assignee "]';
+  const scope = FALLBACK_TO_ASSIGNEES ? 'li.gh-pr-reviewers-row ' : '';
+  hideStyle.textContent =
+    `${scope}${assigneeSel} { display: none !important; }\n` +
+    `${scope}div:has(> ${assigneeSel}) { display: none !important; }`;
 
   // ---- fetch reviewers from the same-origin sidebar partial -----------------
   const cache = new Map();
@@ -158,7 +163,7 @@
 
   // ---- DOM helpers ----------------------------------------------------------
   function ensureCell(row, meta) {
-    let cell = meta.querySelector(':scope > .gh-pr-reviewers');
+    let cell = row.querySelector('.gh-pr-reviewers');
     if (!cell) {
       cell = document.createElement('div');
       cell.className = 'gh-pr-reviewers';
@@ -169,8 +174,9 @@
         gap: '4px',
         marginLeft: 'auto',
       });
-      meta.appendChild(cell);
     }
+    // relocate if the layout changed (e.g. switching compact <-> expanded)
+    if (cell.parentElement !== meta) meta.appendChild(cell);
     return cell;
   }
 
@@ -345,7 +351,26 @@
     return rows;
   }
 
+  // The list is rendered in two densities; this script only targets the comfortable one ("default"), leaving the compact table untouched.
+  const listRoot = () => document.querySelector('[data-listview-component="items-list"]');
+  const isComfortable = () => {
+    const list = listRoot();
+    return !list || list.getAttribute('data-density') !== 'compact';
+  };
+
+  function teardown() {
+    document.querySelectorAll('.gh-pr-reviewers, .gh-pr-opener').forEach((n) => n.remove());
+    document.querySelectorAll('.gh-pr-reviewers-row').forEach((r) => r.classList.remove('gh-pr-reviewers-row'));
+    if (hideStyle.isConnected) hideStyle.remove();
+  }
+
   function run() {
+    if (!isComfortable()) {
+      teardown();
+      return;
+    }
+    if (!hideStyle.isConnected) (document.head || document.documentElement).appendChild(hideStyle);
+
     const rows = collectRows();
     if (DEBUG) console.log('[gh-pr-reviewers] run: matched', rows.size, 'PR row(s)', [...rows.keys()]);
     if (rows.size === 0 && DEBUG) {
@@ -382,7 +407,12 @@
       run();
     }, 300);
   });
-  observer.observe(document.body, { childList: true, subtree: true });
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['data-density'],
+  });
 
   if (typeof GM_registerMenuCommand === 'function') {
     GM_registerMenuCommand('Configure hidden reviewers', () => {
