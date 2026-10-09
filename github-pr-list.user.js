@@ -201,15 +201,15 @@
   function addOpener(row) {
     const title = row.querySelector("[data-listview-item-title-container]");
     if (!title || title.querySelector(":scope > .gh-pr-opener")) return;
+    const link = row.querySelector('[data-testid="author-filter-link"]');
     const login = authorLogin(row);
-    if (!login) return;
+    const filterHref = link && link.getAttribute("href");
+    if (!login || !filterHref) return;
 
     const a = document.createElement("a");
     a.className = "gh-pr-opener";
-    a.href = `/${login}`;
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.title = `Opened by ${login}`;
+    a.href = filterHref; // clicking filters the list by author, like GitHub's own link
+    a.title = `Filter by author ${login}`;
     Object.assign(a.style, {
       display: "inline-flex",
       alignItems: "center",
