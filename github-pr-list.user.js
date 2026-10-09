@@ -2,7 +2,7 @@
 // @name         GitHub PR list — Show opener avatar on the left, and reviewers instead of assignees on the right
 // @namespace    https://github.com/danieleformichelli/tampermonkey-scripts
 // @version      1.0.1
-// @description  Show opener avatar on the left, and reviewers in place of the assignees. Works in both display densities.
+// @description  Show opener avatar on the left, and reviewers in place of the assignees.
 // @author       Daniele Formichelli
 // @match        https://github.com/*
 // @icon         https://github.githubassets.com/favicons/favicon.svg
