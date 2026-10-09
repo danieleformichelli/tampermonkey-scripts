@@ -109,35 +109,6 @@
        ~20px empty on its right; pull the reviewers into it (the 8px column gap still separates them) */
     li[class*="listItemCompact"] .gh-pr-reviewers { width: ${CELL_WIDTH}px; margin-left: -16px !important; }
 
-    /* "Pending reviews by" bar; a data attribute (not a class) hides rows, React resets className */
-    li[data-gh-pr-filtered] { display: none !important; }
-    .gh-pr-pending-bar {
-      display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
-      padding: 6px 16px; line-height: 20px;
-      border-bottom: 1px solid var(--borderColor-muted, #d0d7de);
-    }
-    .gh-pr-pending-bar[hidden] { display: none; }
-    .gh-pr-pending-label { font-size: 14px; color: var(--fgColor-muted, #656d76); white-space: nowrap; margin-right: 4px; }
-    .gh-pr-pending-btn {
-      position: relative; width: 28px; height: 28px; padding: 0;
-      border: 0; border-radius: 50%; background: var(--bgColor-muted, #f6f8fa);
-      cursor: pointer; transition: transform 0.15s, box-shadow 0.15s;
-    }
-    .gh-pr-pending-btn:hover { transform: scale(1.1); }
-    .gh-pr-pending-btn[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--fgColor-accent, #0969da); }
-    .gh-pr-pending-btn img { width: 100%; height: 100%; display: block; border-radius: 50%; }
-    .gh-pr-pending-initial {
-      display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
-      font-size: 12px; font-weight: 600; color: var(--fgColor-muted, #656d76);
-    }
-    .gh-pr-pending-count {
-      position: absolute; top: -3px; right: -3px;
-      display: flex; align-items: center; justify-content: center; box-sizing: border-box;
-      min-width: 14px; height: 14px; padding: 0 3px; border-radius: 999px;
-      border: 1px solid var(--bgColor-default, #fff);
-      background: var(--bgColor-neutral-emphasis, #6e7781); color: var(--fgColor-onEmphasis, #fff);
-      font-size: 10px; font-weight: 600; line-height: 1; pointer-events: none;
-    }
   `;
   // attached by onUrlChange on the first visit to a PR list
 
@@ -553,107 +524,6 @@
     if (has) renderCell(cell, visible);
   }
 
-  // ---- "Pending reviews by" filter bar ---------------------------------------
-  // A reviewer is pending until they approve or request changes, so commented and dismissed
-  // reviews still count. The filter only hides rows on the current page.
-  const isPending = (r) => r.status !== "approved" && r.status !== "changes";
-  let activeFilter = null; // reviewer name
-  let bar = null;
-  let barSig = null;
-
-  const reviewersOf = (num) => visibleReviewers(cache.get(cacheKey(num)) || cachedReviewers(num));
-
-  function ensureBar() {
-    if (bar && bar.isConnected) return bar;
-    const list = document.querySelector('ul[data-listview-component="items-list"]');
-    if (!list || !list.parentNode) return null;
-    bar = document.createElement("div");
-    bar.className = "gh-pr-pending-bar";
-    bar.hidden = true;
-    bar.addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-reviewer]");
-      if (!btn) return;
-      activeFilter = activeFilter === btn.dataset.reviewer ? null : btn.dataset.reviewer;
-      updatePending();
-    });
-    // a sibling of the React-managed <ul>, not a child, so React never removes it
-    list.parentNode.insertBefore(bar, list);
-    barSig = null;
-    return bar;
-  }
-
-  function pendingButton(r, count) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "gh-pr-pending-btn";
-    btn.dataset.reviewer = r.name;
-    btn.title = `${r.name}: ${count} pending`;
-    btn.setAttribute("aria-label", `Show only pull requests pending review by ${r.name} (${count})`);
-    btn.setAttribute("aria-pressed", String(activeFilter === r.name));
-    if (r.avatar) {
-      const img = document.createElement("img");
-      img.src = r.avatar;
-      img.alt = "";
-      btn.appendChild(img);
-    } else {
-      const span = document.createElement("span");
-      span.className = "gh-pr-pending-initial";
-      span.textContent = initial(r.name);
-      btn.appendChild(span);
-    }
-    const badge = document.createElement("span");
-    badge.className = "gh-pr-pending-count";
-    badge.textContent = count > 99 ? "99+" : String(count);
-    btn.appendChild(badge);
-    return btn;
-  }
-
-  function updatePending() {
-    if (!syncRepo()) return; // navigated away before the timer fired
-    const rows = collectRows();
-    const counts = new Map(); // name -> { reviewer, count }
-    for (const num of rows.keys()) {
-      for (const r of reviewersOf(num)) {
-        if (!isPending(r)) continue;
-        const entry = counts.get(r.name) || { reviewer: r, count: 0 };
-        entry.count++;
-        counts.set(r.name, entry);
-      }
-    }
-    // a filter whose reviewer has nothing pending here any more would hide every row with no button to undo it
-    if (activeFilter && !counts.has(activeFilter)) activeFilter = null;
-
-    for (const [num, row] of rows) {
-      const hide = activeFilter !== null && !reviewersOf(num).some((r) => r.name === activeFilter && isPending(r));
-      if (hide) row.setAttribute("data-gh-pr-filtered", "");
-      else row.removeAttribute("data-gh-pr-filtered");
-    }
-
-    const el = ensureBar();
-    if (!el) return;
-    const entries = [...counts.values()].sort((a, b) => a.reviewer.name.localeCompare(b.reviewer.name, undefined, { sensitivity: "base" }));
-    // our own DOM writes wake the MutationObserver, so only repaint when something changed
-    const sig = activeFilter + "|" + entries.map((e) => `${e.reviewer.name}:${e.count}`).join(",");
-    if (sig === barSig) return;
-    barSig = sig;
-
-    const label = document.createElement("span");
-    label.className = "gh-pr-pending-label";
-    label.textContent = "Pending reviews by:";
-    el.replaceChildren(label, ...entries.map((e) => pendingButton(e.reviewer, e.count)));
-    el.hidden = entries.length === 0;
-  }
-
-  // next frame, before it paints: coalesces bursts without the bar visibly popping in late
-  let pendingFrame = null;
-  function schedulePending() {
-    if (pendingFrame) return;
-    pendingFrame = requestAnimationFrame(() => {
-      pendingFrame = null;
-      updatePending();
-    });
-  }
-
   // ---- main loop ------------------------------------------------------------
   function collectRows() {
     const rows = new Map(); // num -> <li>
@@ -676,16 +546,14 @@
   let lastHref = null;
   function run() {
     if (!syncRepo()) {
-      if (bar && bar.isConnected) bar.remove(); // in case GitHub kept the container on leaving the list
       lastHref = null;
       return;
     }
     if (location.href !== lastHref) {
       // a new list (or the same one revisited): refetch so reviewers aren't stale; the stored
-      // copy still paints instantly while the fetches run. The bar's filter is per page, so reset it.
+      // copy still paints instantly while the fetches run
       lastHref = location.href;
       cache.clear();
-      activeFilter = null;
     }
     const rows = collectRows();
     if (DEBUG) console.log("[gh-pr-reviewers] run: matched", rows.size, "PR row(s)", [...rows.keys()]);
@@ -709,11 +577,9 @@
       schedule(() =>
         fetchReviewers(num).then((reviewers) => {
           if (reviewers !== null && row.isConnected) apply(row, reviewers);
-          schedulePending();
         }),
       );
     }
-    schedulePending();
   }
 
   // ---- lifecycle ------------------------------------------------------------
@@ -750,7 +616,7 @@
       // its selectors target GitHub's shared list components, so left in place it would also hide
       // assignees on e.g. the issues list, and cost style matching on every page after
       hideStyle.remove();
-      run(); // tidies up: removes the bar, forgets the last list URL
+      run(); // tidies up: forgets the last list URL
     }
   }
 
@@ -777,12 +643,11 @@
       } catch (err) {
         /* storage unavailable */
       }
-      // force a repaint of the cells and the pending bar with the new filter
+      // force a repaint with the new filter
       document.querySelectorAll(".gh-pr-reviewers").forEach((cell) => {
         delete cell.dataset.ghSig;
         delete cell.dataset.ghDone;
       });
-      barSig = null;
       run();
     });
   }
