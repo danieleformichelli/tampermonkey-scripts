@@ -1,0 +1,5 @@
+[tools]
+"npm:prettier" = "3.9.9"
+
+[settings]
+lockfile = true

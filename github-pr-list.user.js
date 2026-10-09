@@ -1,17 +1,19 @@
 // ==UserScript==
 // @name         GitHub PR list — Show opener avatar on the left, and reviewers instead of assignees on the right
-// @namespace    https://github.com/danieleformichelli
+// @namespace    https://github.com/danieleformichelli/tampermonkey-scripts
 // @version      1.0.1
-// @description  Show opener avatar on the left, and reviewers in place of the assignees.
+// @description  Show opener avatar on the left, and reviewers in place of the assignees. Works in both display densities.
 // @author       Daniele Formichelli
 // @match        https://github.com/*
 // @icon         https://github.githubassets.com/favicons/favicon.svg
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // ==/UserScript==
 
 (function () {
-  'use strict';
+  "use strict";
 
   // ---- config ---------------------------------------------------------------
   const MAX_AVATARS = 5; // avatars before a "+N" badge
@@ -22,26 +24,36 @@
   const CELL_WIDTH = MAX_AVATARS * AVATAR_SIZE + (MAX_AVATARS - 1) * AVATAR_GAP;
   const CONCURRENCY = 25; // parallel sidebar fetches (one PR-list page)
   const FALLBACK_TO_ASSIGNEES = false; // never show assignees again once reviewers are the point
-  // machine users: regular accounts run by automation, which nothing in the markup tells apart from
-  // people (app bots are detected by isBot). Exact logins, case-insensitive.
-  const BOT_LOGINS = ['tractive-guardian'];
+  // reviewers to hide on top of the app bots isBot drops, e.g. machine users (regular accounts run
+  // by automation, which nothing in the markup tells apart from people). Configurable from the
+  // Tampermonkey menu; entries match case-insensitively anywhere in the login.
+  let ignoreList = ["cursor", "copilot"];
+  try {
+    const saved = GM_getValue("ignoreReviewers", null);
+    if (Array.isArray(saved)) ignoreList = saved;
+  } catch (err) {
+    /* storage unavailable; keep defaults */
+  }
+  const isIgnored = (name) => ignoreList.some((entry) => name.toLowerCase().includes(String(entry).toLowerCase()));
+  // applied when rendering, not when parsing, so a menu change takes effect without refetching
+  const visibleReviewers = (list) => (list || []).filter((r) => !isIgnored(r.name));
   // `icon` is an official Primer Octicon path (MIT), drawn as a badge on the avatar's corner for
   // states the ring colour alone doesn't tell apart (both are muted grey)
   const STATUS = {
-    approved: { color: 'var(--fgColor-success, #2da44e)', label: 'approved these changes' },
-    changes: { color: 'var(--fgColor-danger, #cf222e)', label: 'requested changes' },
-    pending: { color: 'var(--fgColor-attention, #d29922)', label: 'review pending' },
+    approved: { color: "var(--fgColor-success, #2da44e)", label: "approved these changes" },
+    changes: { color: "var(--fgColor-danger, #cf222e)", label: "requested changes" },
+    pending: { color: "var(--fgColor-attention, #d29922)", label: "review pending" },
     commented: {
-      color: 'var(--fgColor-muted, #8b949e)',
-      label: 'left review comments',
+      color: "var(--fgColor-muted, #8b949e)",
+      label: "left review comments",
       // octicon comment-16
-      icon: 'M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z',
+      icon: "M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z",
     },
     dismissed: {
-      color: 'var(--fgColor-muted, #8b949e)',
-      label: 'review dismissed',
+      color: "var(--fgColor-muted, #8b949e)",
+      label: "review dismissed",
       // octicon x-16
-      icon: 'M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z',
+      icon: "M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z",
     },
   };
   const BADGE_SIZE = 13; // px, status octicon badge on the avatar's bottom-right corner
@@ -51,7 +63,7 @@
   // GitHub navigates in-page (e.g. commits/branches -> Pull requests), so the script runs on every
   // page and re-reads the repo from the URL on each pass; it only acts on a repo's PR list.
   const PULLS_PATH = /^\/([^/]+)\/([^/]+)\/pulls(?:\/|$)/;
-  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   let owner = null;
   let repo = null;
   let pullHref = null;
@@ -65,8 +77,7 @@
     repo = m[2];
     pullHref = new RegExp(`^/${esc(owner)}/${esc(repo)}/pull/(\\d+)/?$`);
     loadStore();
-    window.__ghPrReviewers = { version: '1.0.1', owner, repo, loadedAt: Date.now() };
-    if (DEBUG) console.log('[gh-pr-reviewers] now on', owner + '/' + repo);
+    if (DEBUG) console.log("[gh-pr-reviewers] now on", owner + "/" + repo);
     return true;
   }
 
@@ -77,7 +88,7 @@
   //   keeps the cell last without moving the node
   // - the cell centres vertically like GitHub's own metadata items, so it lines up with the
   //   comment count in both layouts
-  const hideStyle = document.createElement('style');
+  const hideStyle = document.createElement("style");
   hideStyle.textContent = `
     li.gh-pr-reviewers-row [class*="alignRight"],
     li.gh-pr-reviewers-row [class*="metadataAssignees"],
@@ -137,7 +148,7 @@
   function loadStore() {
     storeKey = `gh-pr-reviewers:${owner}/${repo}`;
     try {
-      store = JSON.parse(localStorage.getItem(storeKey) || '{}') || {};
+      store = JSON.parse(localStorage.getItem(storeKey) || "{}") || {};
     } catch (err) {
       store = {};
     }
@@ -164,8 +175,7 @@
   }
 
   const partialUrl = (num) =>
-    `/${owner}/${repo}/issues/${num}/show_partial?partial=` +
-    encodeURIComponent('pull_requests/sidebar/show/reviewers');
+    `/${owner}/${repo}/issues/${num}/show_partial?partial=` + encodeURIComponent("pull_requests/sidebar/show/reviewers");
 
   function fetchReviewers(num) {
     const key = cacheKey(num);
@@ -174,7 +184,7 @@
     const repoStoreKey = storeKey;
     const repoStore = store;
 
-    const p = fetch(partialUrl(num), { credentials: 'same-origin', headers: { Accept: 'text/html' } })
+    const p = fetch(location.origin + partialUrl(num), { credentials: "same-origin", headers: { Accept: "text/html" } })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.text();
@@ -183,11 +193,17 @@
       .then((list) => {
         cache.set(key, list);
         persist(repoStoreKey, repoStore, num, list);
-        if (DEBUG) console.log('[gh-pr-reviewers] ' + key, list.length, 'reviewer(s)', list.map((r) => r.name + ':' + r.status));
+        if (DEBUG)
+          console.log(
+            "[gh-pr-reviewers] " + key,
+            list.length,
+            "reviewer(s)",
+            list.map((r) => r.name + ":" + r.status),
+          );
         return list;
       })
       .catch((err) => {
-        console.warn('[gh-pr-reviewers] fetch failed for ' + key, err);
+        console.warn("[gh-pr-reviewers] fetch failed for " + key, err);
         cache.set(key, null); // don't hammer a failing endpoint on every mutation
         return null;
       })
@@ -201,43 +217,36 @@
   // GitHub marks app accounts structurally, so no guessing from the login: people link to /<login>
   // with hovercard type "user", teams to /orgs/... with "team"; apps (Copilot, Cursor, Renovate, ...)
   // link to /apps/<slug> and carry their own hovercard type, e.g. "copilot" or "bot".
-  // Machine users look like people, so they come from BOT_LOGINS.
-  const botLogins = new Set(BOT_LOGINS.map((l) => l.toLowerCase()));
+  // Machine users look like people, so they go in the ignore list.
   function isBot(span, link, name) {
-    const href = link ? link.getAttribute('href') || '' : '';
-    const type = span.getAttribute('data-hovercard-type') || '';
-    return (
-      href.startsWith('/apps/') ||
-      type === 'bot' ||
-      type === 'copilot' ||
-      /\[bot\]$/i.test(name) ||
-      botLogins.has(name.toLowerCase())
-    );
+    const href = link ? link.getAttribute("href") || "" : "";
+    const type = span.getAttribute("data-hovercard-type") || "";
+    return href.startsWith("/apps/") || type === "bot" || type === "copilot" || /\[bot\]$/i.test(name);
   }
 
   function parseReviewers(html) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const doc = new DOMParser().parseFromString(html, "text/html");
     const out = [];
-    for (const span of doc.querySelectorAll('span.js-hovercard-left[data-assignee-name]')) {
-      const block = span.closest('div');
-      const tip = block && block.querySelector('tool-tip');
-      const text = tip ? tip.textContent.toLowerCase() : '';
-      let status = 'pending';
+    for (const span of doc.querySelectorAll("span.js-hovercard-left[data-assignee-name]")) {
+      const block = span.closest("div");
+      const tip = block && block.querySelector("tool-tip");
+      const text = tip ? tip.textContent.toLowerCase() : "";
+      let status = "pending";
       // dismissed first: a dismissed approval's tooltip may still mention "approved"
-      if (/dismissed/.test(text)) status = 'dismissed';
-      else if (/approved/.test(text)) status = 'approved';
-      else if (/requested changes|changes requested/.test(text)) status = 'changes';
-      else if (/left review comments|commented/.test(text)) status = 'commented';
-      else if (/awaiting|requested review/.test(text)) status = 'pending';
+      if (/dismissed/.test(text)) status = "dismissed";
+      else if (/approved/.test(text)) status = "approved";
+      else if (/requested changes|changes requested/.test(text)) status = "changes";
+      else if (/left review comments|commented/.test(text)) status = "commented";
+      else if (/awaiting|requested review/.test(text)) status = "pending";
 
-      const img = span.querySelector('img.avatar');
-      const link = span.querySelector('a.assignee');
-      const name = span.getAttribute('data-assignee-name');
+      const img = span.querySelector("img.avatar");
+      const link = span.querySelector("a.assignee");
+      const name = span.getAttribute("data-assignee-name");
       if (isBot(span, link, name)) continue;
       out.push({
         name,
-        avatar: img ? img.getAttribute('src') : null,
-        href: link ? link.getAttribute('href') : null,
+        avatar: img ? img.getAttribute("src") : null,
+        href: link ? link.getAttribute("href") : null,
         status,
       });
     }
@@ -266,98 +275,106 @@
 
   // ---- DOM helpers ----------------------------------------------------------
   function ensureCell(row, meta) {
-    let cell = meta.querySelector(':scope > .gh-pr-reviewers');
+    let cell = row.querySelector(".gh-pr-reviewers");
     if (!cell) {
-      cell = document.createElement('div');
-      cell.className = 'gh-pr-reviewers';
+      cell = document.createElement("div");
+      cell.className = "gh-pr-reviewers";
       Object.assign(cell.style, {
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'flex-start',
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "flex-start",
         gap: `${AVATAR_GAP}px`,
         width: `${CELL_WIDTH}px`,
-        flexShrink: '0',
+        flexShrink: "0",
         height: `${AVATAR_SIZE}px`,
-        padding: '0 2px', // room for the 2px status ring on the outer avatars
-        boxSizing: 'content-box',
-        marginLeft: 'auto',
+        padding: "0 2px", // room for the 2px status ring on the outer avatars
+        boxSizing: "content-box",
+        marginLeft: "auto",
       });
-      meta.appendChild(cell);
     }
+    // relocate if React replaced the metadata container (e.g. switching compact <-> comfortable)
+    if (cell.parentElement !== meta) meta.appendChild(cell);
     return cell;
   }
 
-  const initial = (name) => (name && name.trim()[0] ? name.trim()[0].toUpperCase() : '?');
+  const initial = (name) => (name && name.trim()[0] ? name.trim()[0].toUpperCase() : "?");
 
   function authorLogin(row) {
     const link = row.querySelector('[data-testid="author-filter-link"]');
     if (!link) return null;
     try {
       // href is "...?q=is%3Apr+...author%3A<login>"
-      const q = decodeURIComponent(link.getAttribute('href') || '');
+      const q = decodeURIComponent(link.getAttribute("href") || "");
       const m = /author:([^&\s]+)/.exec(q);
       if (m) return m[1];
     } catch (err) {
       // fall through to the label
     }
     // GitHub may render a <button> without href; its label is "Filter by author <Name (login)|login>"
-    const label = (link.getAttribute('aria-label') || '').replace(/^Filter by author\s+/, '').trim();
+    const label = (link.getAttribute("aria-label") || "").replace(/^Filter by author\s+/, "").trim();
     const paren = /\(([\w-]+(?:\[bot\])?)\)$/.exec(label);
     if (paren) return paren[1];
     return /^[\w-]+(?:\[bot\])?$/.test(label) ? label : null;
   }
 
   function addOpener(row) {
-    const title = row.querySelector('[data-listview-item-title-container]');
+    const title = row.querySelector("[data-listview-item-title-container]");
     if (!title) return;
     // inside the <h3> so it flows with the title text in both compact and comfortable layouts
-    const heading = title.querySelector('h3');
+    const heading = title.querySelector("h3");
     const host = heading || title;
     // drop openers left elsewhere in the row (e.g. after React re-rendered around them)
-    for (const stray of row.querySelectorAll('.gh-pr-opener')) {
+    for (const stray of row.querySelectorAll(".gh-pr-opener")) {
       if (stray.parentElement !== host) stray.remove();
     }
-    if (host.querySelector(':scope > .gh-pr-opener')) return;
+    if (host.querySelector(":scope > .gh-pr-opener")) return;
     const login = authorLogin(row);
     if (!login) return;
+    // clicking filters the list by author, like GitHub's own link; when GitHub renders that as a
+    // <button> without href, build the same search
+    const link = row.querySelector('[data-testid="author-filter-link"]');
+    let filterHref = link && link.getAttribute("href");
+    if (!filterHref) {
+      const url = new URL(`/${owner}/${repo}/pulls`, location.origin);
+      url.searchParams.set("q", `is:pr is:open author:${login}`);
+      filterHref = url.href;
+    }
 
-    const a = document.createElement('a');
-    a.className = 'gh-pr-opener';
-    a.href = `/${login}`;
-    a.target = '_blank';
-    a.rel = 'noopener';
-    a.title = `Opened by ${login}`;
+    const a = document.createElement("a");
+    a.className = "gh-pr-opener";
+    a.href = filterHref;
+    a.title = `Filter by author ${login}`;
     Object.assign(a.style, {
-      display: 'inline-flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      verticalAlign: 'middle',
-      marginRight: '8px',
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      verticalAlign: "middle",
+      marginRight: "8px",
     });
 
-    const img = document.createElement('img');
+    const img = document.createElement("img");
     img.src = `https://github.com/${encodeURIComponent(login)}.png?size=48`;
     img.alt = login;
     img.width = 20;
     img.height = 20;
     Object.assign(img.style, {
-      borderRadius: '50%',
-      display: 'block',
-      background: 'var(--bgColor-muted, #30363d)',
+      borderRadius: "50%",
+      display: "block",
+      background: "var(--bgColor-muted, #30363d)",
     });
     img.addEventListener(
-      'error',
+      "error",
       () => {
         img.remove();
         a.textContent = initial(login);
         Object.assign(a.style, {
-          width: '20px',
-          height: '20px',
-          borderRadius: '50%',
-          fontSize: '11px',
-          fontWeight: '600',
-          color: '#fff',
-          background: 'var(--fgColor-muted, #8b949e)',
+          width: "20px",
+          height: "20px",
+          borderRadius: "50%",
+          fontSize: "11px",
+          fontWeight: "600",
+          color: "#fff",
+          background: "var(--fgColor-muted, #8b949e)",
         });
       },
       { once: true },
@@ -370,13 +387,13 @@
   // clicking a reviewer searches this repo's open PRs: still waiting on them if their review is
   // pending, otherwise the ones they reviewed. Teams can only be requested, never review.
   function reviewerSearch(r) {
-    const team = /^\/orgs\/([^/]+)\/teams\/([^/]+)/.exec(r.href || '');
+    const team = /^\/orgs\/([^/]+)\/teams\/([^/]+)/.exec(r.href || "");
     let filter;
     let what;
     if (team) {
       filter = `team-review-requested:${team[1]}/${team[2]}`;
-      what = 'open PRs requesting review from this team';
-    } else if (r.status === 'pending') {
+      what = "open PRs requesting review from this team";
+    } else if (r.status === "pending") {
       filter = `review-requested:${r.name}`;
       what = `open PRs waiting on ${r.name}'s review`;
     } else {
@@ -384,53 +401,53 @@
       what = `open PRs reviewed by ${r.name}`;
     }
     const url = new URL(`/${owner}/${repo}/pulls`, location.origin);
-    url.searchParams.set('q', `is:pr is:open sort:updated-desc ${filter}`);
+    url.searchParams.set("q", `is:pr is:open sort:updated-desc ${filter}`);
     return { href: url.href, what };
   }
 
   function avatarNode(r) {
     const s = STATUS[r.status] || STATUS.pending;
     const search = reviewerSearch(r);
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = search.href;
     a.title = `${r.name} - ${s.label}\nClick to show ${search.what}`;
     Object.assign(a.style, {
-      position: 'relative', // anchors the status badge
-      display: 'inline-flex',
-      alignItems: 'center',
-      flexShrink: '0',
+      position: "relative", // anchors the status badge
+      display: "inline-flex",
+      alignItems: "center",
+      flexShrink: "0",
       width: `${AVATAR_SIZE}px`,
       height: `${AVATAR_SIZE}px`,
-      lineHeight: '0',
+      lineHeight: "0",
     });
 
     if (r.avatar) {
-      const img = document.createElement('img');
+      const img = document.createElement("img");
       img.src = r.avatar;
       img.alt = r.name;
       img.width = AVATAR_SIZE;
       img.height = AVATAR_SIZE;
       Object.assign(img.style, {
-        borderRadius: '50%',
+        borderRadius: "50%",
         boxShadow: `0 0 0 2px ${s.color}`,
-        background: 'var(--bgColor-default, #fff)',
-        display: 'block',
+        background: "var(--bgColor-default, #fff)",
+        display: "block",
       });
       a.appendChild(img);
     } else {
-      const span = document.createElement('span');
+      const span = document.createElement("span");
       span.textContent = initial(r.name);
       Object.assign(span.style, {
         width: `${AVATAR_SIZE}px`,
         height: `${AVATAR_SIZE}px`,
-        lineHeight: 'normal',
-        borderRadius: '50%',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: '11px',
-        fontWeight: '600',
-        color: '#fff',
+        lineHeight: "normal",
+        borderRadius: "50%",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: "11px",
+        fontWeight: "600",
+        color: "#fff",
         background: s.color,
       });
       a.appendChild(span);
@@ -440,64 +457,64 @@
   }
 
   function statusBadge(d) {
-    const NS = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(NS, 'svg');
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
     for (const [key, value] of Object.entries({
-      viewBox: '0 0 16 16',
+      viewBox: "0 0 16 16",
       width: String(BADGE_SIZE),
       height: String(BADGE_SIZE),
-      fill: 'currentColor',
-      'aria-hidden': 'true',
-      focusable: 'false',
+      fill: "currentColor",
+      "aria-hidden": "true",
+      focusable: "false",
     })) {
       svg.setAttribute(key, value);
     }
     Object.assign(svg.style, {
-      position: 'absolute',
-      right: '-4px',
-      bottom: '-4px',
-      boxSizing: 'border-box',
-      padding: '1px',
-      borderRadius: '50%',
-      background: 'var(--bgColor-default, #fff)',
-      border: '1px solid var(--borderColor-default, #d0d7de)',
-      color: 'var(--fgColor-muted, #8b949e)',
-      pointerEvents: 'none',
+      position: "absolute",
+      right: "-4px",
+      bottom: "-4px",
+      boxSizing: "border-box",
+      padding: "1px",
+      borderRadius: "50%",
+      background: "var(--bgColor-default, #fff)",
+      border: "1px solid var(--borderColor-default, #d0d7de)",
+      color: "var(--fgColor-muted, #8b949e)",
+      pointerEvents: "none",
     });
-    const path = document.createElementNS(NS, 'path');
-    path.setAttribute('d', d);
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", d);
     svg.appendChild(path);
     return svg;
   }
 
   function renderCell(cell, reviewers) {
-    cell.textContent = '';
+    cell.textContent = "";
     // dismissed reviews matter least, so they're the first to fall into the "+N" overflow;
     // sort is stable, so everyone else keeps the sidebar's order
-    reviewers = [...reviewers].sort((a, b) => (a.status === 'dismissed') - (b.status === 'dismissed'));
+    reviewers = [...reviewers].sort((a, b) => (a.status === "dismissed") - (b.status === "dismissed"));
     // up to MAX_AVATARS fit; beyond that the last slot becomes a "+N" circle
     const shown = reviewers.length > MAX_AVATARS ? reviewers.slice(0, MAX_AVATARS - 1) : reviewers;
     for (const r of shown) cell.appendChild(avatarNode(r));
     const rest = reviewers.slice(shown.length);
     if (rest.length) {
-      const more = document.createElement('span');
+      const more = document.createElement("span");
       more.textContent = `+${rest.length}`;
-      more.title = rest.map((r) => r.name).join(', ');
+      more.title = rest.map((r) => r.name).join(", ");
       Object.assign(more.style, {
         width: `${AVATAR_SIZE}px`,
         height: `${AVATAR_SIZE}px`,
-        flexShrink: '0',
-        borderRadius: '50%',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        boxShadow: '0 0 0 2px var(--borderColor-default, #d0d7de)',
-        background: 'var(--bgColor-muted, #f6f8fa)',
-        fontSize: '10px',
-        fontWeight: '600',
-        lineHeight: 'normal',
-        color: 'var(--fgColor-muted, #8b949e)',
-        cursor: 'default',
+        flexShrink: "0",
+        borderRadius: "50%",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        boxShadow: "0 0 0 2px var(--borderColor-default, #d0d7de)",
+        background: "var(--bgColor-muted, #f6f8fa)",
+        fontSize: "10px",
+        fontWeight: "600",
+        lineHeight: "normal",
+        color: "var(--fgColor-muted, #8b949e)",
+        cursor: "default",
       });
       cell.appendChild(more);
     }
@@ -506,48 +523,49 @@
   function apply(row, reviewers) {
     const meta = row.querySelector('[class*="MetadataContainer"]');
     if (!meta) {
-      if (DEBUG) console.warn('[gh-pr-reviewers] no MetadataContainer in row, skipping');
+      if (DEBUG) console.warn("[gh-pr-reviewers] no MetadataContainer in row, skipping");
       return;
     }
 
     const cell = ensureCell(row, meta);
-    const has = reviewers && reviewers.length > 0;
+    const visible = visibleReviewers(reviewers);
+    const has = visible.length > 0;
     // order-independent, so a reshuffled sidebar doesn't force a repaint
     const sig = has
-      ? reviewers
-          .map((r) => r.name + ':' + r.status)
+      ? visible
+          .map((r) => r.name + ":" + r.status)
           .sort()
-          .join('|')
-      : '';
-    if (cell.dataset.ghSig === sig && cell.dataset.ghDone === '1') return;
+          .join("|")
+      : "";
+    if (cell.dataset.ghSig === sig && cell.dataset.ghDone === "1") return;
     cell.dataset.ghSig = sig;
-    cell.dataset.ghDone = '1';
+    cell.dataset.ghDone = "1";
 
-    row.classList.toggle('gh-pr-reviewers-row', has || !FALLBACK_TO_ASSIGNEES);
-    cell.textContent = '';
-    cell.style.display = has || !FALLBACK_TO_ASSIGNEES ? 'flex' : 'none';
-    if (has) renderCell(cell, reviewers);
+    row.classList.toggle("gh-pr-reviewers-row", has || !FALLBACK_TO_ASSIGNEES);
+    cell.textContent = "";
+    cell.style.display = has || !FALLBACK_TO_ASSIGNEES ? "flex" : "none";
+    if (has) renderCell(cell, visible);
   }
 
   // ---- "Pending reviews by" filter bar ---------------------------------------
   // A reviewer is pending until they approve or request changes, so commented and dismissed
   // reviews still count. The filter only hides rows on the current page.
-  const isPending = (r) => r.status !== 'approved' && r.status !== 'changes';
+  const isPending = (r) => r.status !== "approved" && r.status !== "changes";
   let activeFilter = null; // reviewer name
   let bar = null;
   let barSig = null;
 
-  const reviewersOf = (num) => cache.get(cacheKey(num)) || cachedReviewers(num) || [];
+  const reviewersOf = (num) => visibleReviewers(cache.get(cacheKey(num)) || cachedReviewers(num));
 
   function ensureBar() {
     if (bar && bar.isConnected) return bar;
     const list = document.querySelector('ul[data-listview-component="items-list"]');
     if (!list || !list.parentNode) return null;
-    bar = document.createElement('div');
-    bar.className = 'gh-pr-pending-bar';
+    bar = document.createElement("div");
+    bar.className = "gh-pr-pending-bar";
     bar.hidden = true;
-    bar.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-reviewer]');
+    bar.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-reviewer]");
       if (!btn) return;
       activeFilter = activeFilter === btn.dataset.reviewer ? null : btn.dataset.reviewer;
       updatePending();
@@ -559,27 +577,27 @@
   }
 
   function pendingButton(r, count) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'gh-pr-pending-btn';
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "gh-pr-pending-btn";
     btn.dataset.reviewer = r.name;
     btn.title = `${r.name}: ${count} pending`;
-    btn.setAttribute('aria-label', `Show only pull requests pending review by ${r.name} (${count})`);
-    btn.setAttribute('aria-pressed', String(activeFilter === r.name));
+    btn.setAttribute("aria-label", `Show only pull requests pending review by ${r.name} (${count})`);
+    btn.setAttribute("aria-pressed", String(activeFilter === r.name));
     if (r.avatar) {
-      const img = document.createElement('img');
+      const img = document.createElement("img");
       img.src = r.avatar;
-      img.alt = '';
+      img.alt = "";
       btn.appendChild(img);
     } else {
-      const span = document.createElement('span');
-      span.className = 'gh-pr-pending-initial';
+      const span = document.createElement("span");
+      span.className = "gh-pr-pending-initial";
       span.textContent = initial(r.name);
       btn.appendChild(span);
     }
-    const badge = document.createElement('span');
-    badge.className = 'gh-pr-pending-count';
-    badge.textContent = count > 99 ? '99+' : String(count);
+    const badge = document.createElement("span");
+    badge.className = "gh-pr-pending-count";
+    badge.textContent = count > 99 ? "99+" : String(count);
     btn.appendChild(badge);
     return btn;
   }
@@ -601,23 +619,21 @@
 
     for (const [num, row] of rows) {
       const hide = activeFilter !== null && !reviewersOf(num).some((r) => r.name === activeFilter && isPending(r));
-      if (hide) row.setAttribute('data-gh-pr-filtered', '');
-      else row.removeAttribute('data-gh-pr-filtered');
+      if (hide) row.setAttribute("data-gh-pr-filtered", "");
+      else row.removeAttribute("data-gh-pr-filtered");
     }
 
     const el = ensureBar();
     if (!el) return;
-    const entries = [...counts.values()].sort((a, b) =>
-      a.reviewer.name.localeCompare(b.reviewer.name, undefined, { sensitivity: 'base' }),
-    );
+    const entries = [...counts.values()].sort((a, b) => a.reviewer.name.localeCompare(b.reviewer.name, undefined, { sensitivity: "base" }));
     // our own DOM writes wake the MutationObserver, so only repaint when something changed
-    const sig = activeFilter + '|' + entries.map((e) => `${e.reviewer.name}:${e.count}`).join(',');
+    const sig = activeFilter + "|" + entries.map((e) => `${e.reviewer.name}:${e.count}`).join(",");
     if (sig === barSig) return;
     barSig = sig;
 
-    const label = document.createElement('span');
-    label.className = 'gh-pr-pending-label';
-    label.textContent = 'Pending reviews by:';
+    const label = document.createElement("span");
+    label.className = "gh-pr-pending-label";
+    label.textContent = "Pending reviews by:";
     el.replaceChildren(label, ...entries.map((e) => pendingButton(e.reviewer, e.count)));
     el.hidden = entries.length === 0;
   }
@@ -634,7 +650,7 @@
   // ---- main loop ------------------------------------------------------------
   function collectRows() {
     const rows = new Map(); // num -> <li>
-    for (const a of document.querySelectorAll('a[href]')) {
+    for (const a of document.querySelectorAll("a[href]")) {
       let pathname;
       try {
         pathname = new URL(a.href, location.href).pathname;
@@ -643,7 +659,7 @@
       }
       const m = pullHref.exec(pathname);
       if (!m) continue;
-      const li = a.closest('li');
+      const li = a.closest("li");
       if (li && !rows.has(m[1])) rows.set(m[1], li);
     }
     return rows;
@@ -664,18 +680,18 @@
       activeFilter = null;
     }
     const rows = collectRows();
-    if (DEBUG) console.log('[gh-pr-reviewers] run: matched', rows.size, 'PR row(s)', [...rows.keys()]);
+    if (DEBUG) console.log("[gh-pr-reviewers] run: matched", rows.size, "PR row(s)", [...rows.keys()]);
     if (rows.size === 0 && DEBUG) {
       console.warn(
-        '[gh-pr-reviewers] no rows matched. Sample pull hrefs:',
-        [...document.querySelectorAll('a[href*="/pull/"]')].slice(0, 3).map((a) => a.getAttribute('href')),
+        "[gh-pr-reviewers] no rows matched. Sample pull hrefs:",
+        [...document.querySelectorAll('a[href*="/pull/"]')].slice(0, 3).map((a) => a.getAttribute("href")),
       );
     }
     for (const [num, row] of rows) {
       // flag the row (CSS hides its assignees instantly), then fill reviewers
       const meta = row.querySelector('[class*="MetadataContainer"]');
       if (!meta) continue;
-      row.classList.add('gh-pr-reviewers-row');
+      row.classList.add("gh-pr-reviewers-row");
       ensureCell(row, meta);
       addOpener(row);
 
@@ -726,13 +742,36 @@
 
   // GitHub navigates with history.pushState, which fires no event of its own. The Navigation API
   // reports it; where that's missing, fall back to a cheap once-a-second URL comparison.
-  if (window.navigation && typeof window.navigation.addEventListener === 'function') {
-    window.navigation.addEventListener('currententrychange', onUrlChange);
+  if (window.navigation && typeof window.navigation.addEventListener === "function") {
+    window.navigation.addEventListener("currententrychange", onUrlChange);
   } else {
     setInterval(onUrlChange, 1000);
   }
-  window.addEventListener('popstate', onUrlChange);
-  document.addEventListener('turbo:load', onUrlChange);
+  window.addEventListener("popstate", onUrlChange);
+  document.addEventListener("turbo:load", onUrlChange);
+
+  if (typeof GM_registerMenuCommand === "function") {
+    GM_registerMenuCommand("Configure hidden reviewers", () => {
+      const input = prompt("Reviewers to hide (comma-separated, case-insensitive):", ignoreList.join(", "));
+      if (input === null) return;
+      ignoreList = input
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      try {
+        GM_setValue("ignoreReviewers", ignoreList);
+      } catch (err) {
+        /* storage unavailable */
+      }
+      // force a repaint of the cells and the pending bar with the new filter
+      document.querySelectorAll(".gh-pr-reviewers").forEach((cell) => {
+        delete cell.dataset.ghSig;
+        delete cell.dataset.ghDone;
+      });
+      barSig = null;
+      run();
+    });
+  }
 
   onUrlChange();
 })();
