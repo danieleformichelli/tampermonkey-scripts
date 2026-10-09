@@ -13,45 +13,55 @@
 // ==/UserScript==
 
 (function () {
-  'use strict';
+  "use strict";
 
   // ---- config ---------------------------------------------------------------
   const MAX_AVATARS = 4; // avatars before a "+N" badge
   const CONCURRENCY = 25; // parallel sidebar fetches (one PR-list page)
   const FALLBACK_TO_ASSIGNEES = false; // never show assignees again once reviewers are the point
-  let ignoreList = ['cursor', 'copilot'];
+  let ignoreList = ["cursor", "copilot"];
   try {
-    const saved = GM_getValue('ignoreReviewers', null);
+    const saved = GM_getValue("ignoreReviewers", null);
     if (Array.isArray(saved)) ignoreList = saved;
   } catch (err) {
     /* storage unavailable; keep defaults */
   }
-  const isIgnored = (name) =>
-    ignoreList.some((entry) => name.toLowerCase().includes(String(entry).toLowerCase()));
+  const isIgnored = (name) => ignoreList.some((entry) => name.toLowerCase().includes(String(entry).toLowerCase()));
   const STATUS = {
-    approved: { color: 'var(--fgColor-success, #2da44e)', label: 'approved these changes' },
-    changes: { color: 'var(--fgColor-danger, #cf222e)', label: 'requested changes' },
-    pending: { color: 'var(--fgColor-attention, #d29922)', label: 'review pending' },
-    commented: { color: 'var(--fgColor-muted, #8b949e)', label: 'left review comments' },
+    approved: {
+      color: "var(--fgColor-success, #2da44e)",
+      label: "approved these changes",
+    },
+    changes: {
+      color: "var(--fgColor-danger, #cf222e)",
+      label: "requested changes",
+    },
+    pending: {
+      color: "var(--fgColor-attention, #d29922)",
+      label: "review pending",
+    },
+    commented: {
+      color: "var(--fgColor-muted, #8b949e)",
+      label: "left review comments",
+    },
   };
 
   // ---- context --------------------------------------------------------------
   const DEBUG = false; // set true to log per-row activity to the console
-  const [owner, repo] = location.pathname.split('/').filter(Boolean);
+  const [owner, repo] = location.pathname.split("/").filter(Boolean);
   if (!owner || !repo) return;
-  if (DEBUG) console.log('[gh-pr-reviewers] loaded for', owner + '/' + repo);
-  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (DEBUG) console.log("[gh-pr-reviewers] loaded for", owner + "/" + repo);
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pullHref = new RegExp(`^/${esc(owner)}/${esc(repo)}/pull/(\\d+)/?$`);
 
   // Hide assignees. Default: hide them everywhere on the list (layout-agnostic,
   // survives React re-renders). With FALLBACK on, scope to rows that got reviewers.
   // Kept as separate rules so an unsupported `:has()` cannot invalidate the rest.
-  const hideStyle = document.createElement('style');
+  const hideStyle = document.createElement("style");
   const assigneeSel = 'button[aria-label^="Filter by assignee "]';
-  const scope = FALLBACK_TO_ASSIGNEES ? 'li.gh-pr-reviewers-row ' : '';
+  const scope = FALLBACK_TO_ASSIGNEES ? "li.gh-pr-reviewers-row " : "";
   hideStyle.textContent =
-    `${scope}${assigneeSel} { display: none !important; }\n` +
-    `${scope}div:has(> ${assigneeSel}) { display: none !important; }`;
+    `${scope}${assigneeSel} { display: none !important; }\n` + `${scope}div:has(> ${assigneeSel}) { display: none !important; }`;
 
   // ---- fetch reviewers from the same-origin sidebar partial -----------------
   const cache = new Map();
@@ -61,7 +71,7 @@
   const STORE_KEY = `gh-pr-reviewers:${owner}/${repo}`;
   let store = {};
   try {
-    store = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {};
+    store = JSON.parse(localStorage.getItem(STORE_KEY) || "{}") || {};
   } catch (err) {
     store = {};
   }
@@ -84,14 +94,16 @@
   }
 
   const partialUrl = (num) =>
-    `/${owner}/${repo}/issues/${num}/show_partial?partial=` +
-    encodeURIComponent('pull_requests/sidebar/show/reviewers');
+    `/${owner}/${repo}/issues/${num}/show_partial?partial=` + encodeURIComponent("pull_requests/sidebar/show/reviewers");
 
   function fetchReviewers(num) {
     if (cache.has(num)) return Promise.resolve(cache.get(num));
     if (inflight.has(num)) return inflight.get(num);
 
-    const p = fetch(location.origin + partialUrl(num), { credentials: 'same-origin', headers: { Accept: 'text/html' } })
+    const p = fetch(location.origin + partialUrl(num), {
+      credentials: "same-origin",
+      headers: { Accept: "text/html" },
+    })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.text();
@@ -100,11 +112,17 @@
       .then((list) => {
         cache.set(num, list);
         persist(num, list);
-        if (DEBUG) console.log('[gh-pr-reviewers] #' + num, list.length, 'reviewer(s)', list.map((r) => r.name + ':' + r.status));
+        if (DEBUG)
+          console.log(
+            "[gh-pr-reviewers] #" + num,
+            list.length,
+            "reviewer(s)",
+            list.map((r) => r.name + ":" + r.status),
+          );
         return list;
       })
       .catch((err) => {
-        console.warn('[gh-pr-reviewers] fetch failed for #' + num, err);
+        console.warn("[gh-pr-reviewers] fetch failed for #" + num, err);
         cache.set(num, null); // don't hammer a failing endpoint on every mutation
         return null;
       })
@@ -116,25 +134,25 @@
 
   // ---- parse the sidebar partial -------------------------------------------
   function parseReviewers(html) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const doc = new DOMParser().parseFromString(html, "text/html");
     const out = [];
-    for (const span of doc.querySelectorAll('span.js-hovercard-left[data-assignee-name]')) {
-      const block = span.closest('div');
-      const tip = block && block.querySelector('tool-tip');
-      const text = tip ? tip.textContent.toLowerCase() : '';
-      let status = 'pending';
-      if (/approved/.test(text)) status = 'approved';
-      else if (/requested changes|changes requested/.test(text)) status = 'changes';
-      else if (/left review comments|commented/.test(text)) status = 'commented';
-      else if (/awaiting|requested review/.test(text)) status = 'pending';
+    for (const span of doc.querySelectorAll("span.js-hovercard-left[data-assignee-name]")) {
+      const block = span.closest("div");
+      const tip = block && block.querySelector("tool-tip");
+      const text = tip ? tip.textContent.toLowerCase() : "";
+      let status = "pending";
+      if (/approved/.test(text)) status = "approved";
+      else if (/requested changes|changes requested/.test(text)) status = "changes";
+      else if (/left review comments|commented/.test(text)) status = "commented";
+      else if (/awaiting|requested review/.test(text)) status = "pending";
 
-      const img = span.querySelector('img.avatar');
-      const link = span.querySelector('a.assignee');
-      const name = span.getAttribute('data-assignee-name');
+      const img = span.querySelector("img.avatar");
+      const link = span.querySelector("a.assignee");
+      const name = span.getAttribute("data-assignee-name");
       out.push({
         name,
-        avatar: img ? img.getAttribute('src') : null,
-        href: link ? link.getAttribute('href') : null,
+        avatar: img ? img.getAttribute("src") : null,
+        href: link ? link.getAttribute("href") : null,
         status,
       });
     }
@@ -163,16 +181,16 @@
 
   // ---- DOM helpers ----------------------------------------------------------
   function ensureCell(row, meta) {
-    let cell = row.querySelector('.gh-pr-reviewers');
+    let cell = row.querySelector(".gh-pr-reviewers");
     if (!cell) {
-      cell = document.createElement('div');
-      cell.className = 'gh-pr-reviewers';
+      cell = document.createElement("div");
+      cell.className = "gh-pr-reviewers";
       Object.assign(cell.style, {
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'flex-end',
-        gap: '4px',
-        marginLeft: 'auto',
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "flex-end",
+        gap: "4px",
+        marginLeft: "auto",
       });
     }
     // relocate if the layout changed (e.g. switching compact <-> expanded)
@@ -180,14 +198,14 @@
     return cell;
   }
 
-  const initial = (name) => (name && name.trim()[0] ? name.trim()[0].toUpperCase() : '?');
+  const initial = (name) => (name && name.trim()[0] ? name.trim()[0].toUpperCase() : "?");
 
   function authorLogin(row) {
     const link = row.querySelector('[data-testid="author-filter-link"]');
     if (!link) return null;
     try {
       // href is "...?q=is%3Apr+...author%3A<login>"; the aria-label may carry a display name
-      const q = decodeURIComponent(link.getAttribute('href') || '');
+      const q = decodeURIComponent(link.getAttribute("href") || "");
       const m = /author:([^&\s]+)/.exec(q);
       return m ? m[1] : null;
     } catch (err) {
@@ -196,93 +214,93 @@
   }
 
   function addOpener(row) {
-    const title = row.querySelector('[data-listview-item-title-container]');
-    if (!title || title.querySelector(':scope > .gh-pr-opener')) return;
+    const title = row.querySelector("[data-listview-item-title-container]");
+    if (!title || title.querySelector(":scope > .gh-pr-opener")) return;
     const login = authorLogin(row);
     if (!login) return;
 
-    const a = document.createElement('a');
-    a.className = 'gh-pr-opener';
+    const a = document.createElement("a");
+    a.className = "gh-pr-opener";
     a.href = `/${login}`;
-    a.target = '_blank';
-    a.rel = 'noopener';
+    a.target = "_blank";
+    a.rel = "noopener";
     a.title = `Opened by ${login}`;
     Object.assign(a.style, {
-      display: 'inline-flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      verticalAlign: 'middle',
-      marginRight: '8px',
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      verticalAlign: "middle",
+      marginRight: "8px",
     });
 
-    const img = document.createElement('img');
+    const img = document.createElement("img");
     img.src = `https://github.com/${encodeURIComponent(login)}.png?size=48`;
     img.alt = login;
     img.width = 20;
     img.height = 20;
     Object.assign(img.style, {
-      borderRadius: '50%',
-      display: 'block',
-      background: 'var(--bgColor-muted, #30363d)',
+      borderRadius: "50%",
+      display: "block",
+      background: "var(--bgColor-muted, #30363d)",
     });
     img.addEventListener(
-      'error',
+      "error",
       () => {
         img.remove();
         a.textContent = initial(login);
         Object.assign(a.style, {
-          width: '20px',
-          height: '20px',
-          borderRadius: '50%',
-          fontSize: '11px',
-          fontWeight: '600',
-          color: '#fff',
-          background: 'var(--fgColor-muted, #8b949e)',
+          width: "20px",
+          height: "20px",
+          borderRadius: "50%",
+          fontSize: "11px",
+          fontWeight: "600",
+          color: "#fff",
+          background: "var(--fgColor-muted, #8b949e)",
         });
       },
       { once: true },
     );
     a.appendChild(img);
 
-    const heading = title.querySelector('h3');
+    const heading = title.querySelector("h3");
     title.insertBefore(a, heading || title.firstChild);
   }
 
   function avatarNode(r) {
     const s = STATUS[r.status] || STATUS.pending;
-    const a = document.createElement('a');
-    a.href = r.href || '#';
-    a.target = '_blank';
-    a.rel = 'noopener';
+    const a = document.createElement("a");
+    a.href = r.href || "#";
+    a.target = "_blank";
+    a.rel = "noopener";
     a.title = `${r.name} - ${s.label}`;
-    Object.assign(a.style, { display: 'inline-flex', alignItems: 'center' });
+    Object.assign(a.style, { display: "inline-flex", alignItems: "center" });
 
     if (r.avatar) {
-      const img = document.createElement('img');
+      const img = document.createElement("img");
       img.src = r.avatar;
       img.alt = r.name;
       img.width = 20;
       img.height = 20;
       Object.assign(img.style, {
-        borderRadius: '50%',
+        borderRadius: "50%",
         boxShadow: `0 0 0 2px ${s.color}`,
-        background: 'var(--bgColor-default, #fff)',
-        display: 'block',
+        background: "var(--bgColor-default, #fff)",
+        display: "block",
       });
       a.appendChild(img);
     } else {
-      const span = document.createElement('span');
+      const span = document.createElement("span");
       span.textContent = initial(r.name);
       Object.assign(span.style, {
-        width: '20px',
-        height: '20px',
-        borderRadius: '50%',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: '11px',
-        fontWeight: '600',
-        color: '#fff',
+        width: "20px",
+        height: "20px",
+        borderRadius: "50%",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: "11px",
+        fontWeight: "600",
+        color: "#fff",
         background: s.color,
       });
       a.appendChild(span);
@@ -291,17 +309,20 @@
   }
 
   function renderCell(cell, reviewers) {
-    cell.textContent = '';
+    cell.textContent = "";
     for (const r of reviewers.slice(0, MAX_AVATARS)) cell.appendChild(avatarNode(r));
     const hidden = reviewers.length - MAX_AVATARS;
     if (hidden > 0) {
-      const more = document.createElement('span');
+      const more = document.createElement("span");
       more.textContent = `+${hidden}`;
       more.title = reviewers
         .slice(MAX_AVATARS)
         .map((r) => r.name)
-        .join(', ');
-      Object.assign(more.style, { fontSize: '11px', color: 'var(--fgColor-muted, #8b949e)' });
+        .join(", ");
+      Object.assign(more.style, {
+        fontSize: "11px",
+        color: "var(--fgColor-muted, #8b949e)",
+      });
       cell.appendChild(more);
     }
   }
@@ -309,7 +330,7 @@
   function apply(row, reviewers) {
     const meta = row.querySelector('[class*="MetadataContainer"]');
     if (!meta) {
-      if (DEBUG) console.warn('[gh-pr-reviewers] no MetadataContainer in row, skipping');
+      if (DEBUG) console.warn("[gh-pr-reviewers] no MetadataContainer in row, skipping");
       return;
     }
 
@@ -319,24 +340,24 @@
     // order-independent, so a reshuffled sidebar doesn't force a repaint
     const sig = has
       ? visible
-          .map((r) => r.name + ':' + r.status)
+          .map((r) => r.name + ":" + r.status)
           .sort()
-          .join('|')
-      : '';
-    if (cell.dataset.ghSig === sig && cell.dataset.ghDone === '1') return;
+          .join("|")
+      : "";
+    if (cell.dataset.ghSig === sig && cell.dataset.ghDone === "1") return;
     cell.dataset.ghSig = sig;
-    cell.dataset.ghDone = '1';
+    cell.dataset.ghDone = "1";
 
-    row.classList.toggle('gh-pr-reviewers-row', has || !FALLBACK_TO_ASSIGNEES);
-    cell.textContent = '';
-    cell.style.display = has || !FALLBACK_TO_ASSIGNEES ? 'flex' : 'none';
+    row.classList.toggle("gh-pr-reviewers-row", has || !FALLBACK_TO_ASSIGNEES);
+    cell.textContent = "";
+    cell.style.display = has || !FALLBACK_TO_ASSIGNEES ? "flex" : "none";
     if (has) renderCell(cell, visible);
   }
 
   // ---- main loop ------------------------------------------------------------
   function collectRows() {
     const rows = new Map(); // num -> <li>
-    for (const a of document.querySelectorAll('a[href]')) {
+    for (const a of document.querySelectorAll("a[href]")) {
       let pathname;
       try {
         pathname = new URL(a.href, location.href).pathname;
@@ -345,7 +366,7 @@
       }
       const m = pullHref.exec(pathname);
       if (!m) continue;
-      const li = a.closest('li');
+      const li = a.closest("li");
       if (li && !rows.has(m[1])) rows.set(m[1], li);
     }
     return rows;
@@ -355,12 +376,12 @@
   const listRoot = () => document.querySelector('[data-listview-component="items-list"]');
   const isComfortable = () => {
     const list = listRoot();
-    return !list || list.getAttribute('data-density') !== 'compact';
+    return !list || list.getAttribute("data-density") !== "compact";
   };
 
   function teardown() {
-    document.querySelectorAll('.gh-pr-reviewers, .gh-pr-opener').forEach((n) => n.remove());
-    document.querySelectorAll('.gh-pr-reviewers-row').forEach((r) => r.classList.remove('gh-pr-reviewers-row'));
+    document.querySelectorAll(".gh-pr-reviewers, .gh-pr-opener").forEach((n) => n.remove());
+    document.querySelectorAll(".gh-pr-reviewers-row").forEach((r) => r.classList.remove("gh-pr-reviewers-row"));
     if (hideStyle.isConnected) hideStyle.remove();
   }
 
@@ -372,18 +393,18 @@
     if (!hideStyle.isConnected) (document.head || document.documentElement).appendChild(hideStyle);
 
     const rows = collectRows();
-    if (DEBUG) console.log('[gh-pr-reviewers] run: matched', rows.size, 'PR row(s)', [...rows.keys()]);
+    if (DEBUG) console.log("[gh-pr-reviewers] run: matched", rows.size, "PR row(s)", [...rows.keys()]);
     if (rows.size === 0 && DEBUG) {
       console.warn(
-        '[gh-pr-reviewers] no rows matched. Sample pull hrefs:',
-        [...document.querySelectorAll('a[href*="/pull/"]')].slice(0, 3).map((a) => a.getAttribute('href')),
+        "[gh-pr-reviewers] no rows matched. Sample pull hrefs:",
+        [...document.querySelectorAll('a[href*="/pull/"]')].slice(0, 3).map((a) => a.getAttribute("href")),
       );
     }
     for (const [num, row] of rows) {
       // flag the row (CSS hides its assignees instantly), then fill reviewers
       const meta = row.querySelector('[class*="MetadataContainer"]');
       if (!meta) continue;
-      row.classList.add('gh-pr-reviewers-row');
+      row.classList.add("gh-pr-reviewers-row");
       ensureCell(row, meta);
       addOpener(row);
 
@@ -411,27 +432,24 @@
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ['data-density'],
+    attributeFilter: ["data-density"],
   });
 
-  if (typeof GM_registerMenuCommand === 'function') {
-    GM_registerMenuCommand('Configure hidden reviewers', () => {
-      const input = prompt(
-        'Reviewers to hide (comma-separated, case-insensitive):',
-        ignoreList.join(', '),
-      );
+  if (typeof GM_registerMenuCommand === "function") {
+    GM_registerMenuCommand("Configure hidden reviewers", () => {
+      const input = prompt("Reviewers to hide (comma-separated, case-insensitive):", ignoreList.join(", "));
       if (input === null) return;
       ignoreList = input
-        .split(',')
+        .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
       try {
-        GM_setValue('ignoreReviewers', ignoreList);
+        GM_setValue("ignoreReviewers", ignoreList);
       } catch (err) {
         /* storage unavailable */
       }
       // force a repaint with the new filter
-      document.querySelectorAll('.gh-pr-reviewers').forEach((cell) => {
+      document.querySelectorAll(".gh-pr-reviewers").forEach((cell) => {
         delete cell.dataset.ghSig;
         delete cell.dataset.ghDone;
       });
