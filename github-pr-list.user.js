@@ -19,8 +19,9 @@
   const MAX_AVATARS = 5; // avatars before a "+N" badge
   const AVATAR_SIZE = 20; // px
   const AVATAR_GAP = 8; // px between reviewer avatars; the 2px status ring eats into it on both sides
-  // fixed so every row's cell is the same width and the metadata columns line up across rows;
-  // the "+N" overflow takes the last avatar slot, so no extra room is reserved for it
+  // compact view: fixed so every row's cell is the same width and the metadata columns line up
+  // across rows (comfortable view sizes it to its avatars); the "+N" overflow takes the last
+  // avatar slot, so no extra room is reserved for it
   const CELL_WIDTH = MAX_AVATARS * AVATAR_SIZE + (MAX_AVATARS - 1) * AVATAR_GAP;
   const CONCURRENCY = 25; // parallel sidebar fetches (one PR-list page)
   const FALLBACK_TO_ASSIGNEES = false; // never show assignees again once reviewers are the point
@@ -86,8 +87,9 @@
   // - assignees are an alignRight item (comfortable) or a fixed-width metadataAssignees column
   //   (compact): hide them, the opener avatar already says who owns the PR. Unscoped unless
   //   FALLBACK_TO_ASSIGNEES, so they never flash in while the script catches up
-  // - until a row gets its reviewers cell, an empty placeholder of the same size holds its place,
-  //   so the columns don't jump when the cell arrives
+  // - compact view gives the cell a fixed width so its columns line up across rows; until a row
+  //   gets its cell, an empty placeholder of that size holds its place, so the columns don't jump.
+  //   Comfortable view has no columns, so the cell just fits its avatars, right-aligned
   // - switching layouts makes React append the new layout's metadata after our cell, so `order`
   //   keeps the cell last without moving the node
   // - the cell centres vertically like GitHub's own metadata items, so it lines up with the
@@ -97,23 +99,15 @@
   hideStyle.textContent = `
     ${assigneeScope}[class*="MetadataContainer"] > [class*="alignRight"],
     ${assigneeScope}[class*="MetadataContainer"] > [class*="metadataAssignees"] { display: none !important; }
-    [class*="MetadataContainer"]:not(:has(> .gh-pr-reviewers))::after {
+    li[class*="listItemCompact"] [class*="MetadataContainer"]:not(:has(> .gh-pr-reviewers))::after {
       content: ""; flex: 0 0 ${CELL_WIDTH + 4}px; height: ${AVATAR_SIZE}px;
-      align-self: center; order: 9999; margin-left: auto;
+      align-self: center; order: 9999; margin-left: -16px;
     }
-    li[class*="listItemCompact"] [class*="MetadataContainer"]:not(:has(> .gh-pr-reviewers))::after { margin-left: -16px; }
     li > .gh-pr-opener { display: none !important; }
     .gh-pr-reviewers { align-self: center; order: 9999; }
     /* compact cells are a fixed 72px with centred content, so the comment count before us leaves
        ~20px empty on its right; pull the reviewers into it (the 8px column gap still separates them) */
-    li[class*="listItemCompact"] .gh-pr-reviewers { margin-left: -16px !important; }
-    /* comfortable view sizes the comment count to its digits, and the fixed-width reviewers cell
-       right-aligns it, so the icons zig-zag across rows; a fixed, left-aligned box lines them up
-       (fits up to 3 digits, wider counts just grow) */
-    li:not([class*="listItemCompact"]) [class*="MetadataContainer"] > :has(> .octicon-comment) {
-      min-width: 44px;
-      justify-content: flex-start;
-    }
+    li[class*="listItemCompact"] .gh-pr-reviewers { width: ${CELL_WIDTH}px; margin-left: -16px !important; }
 
     /* "Pending reviews by" bar; a data attribute (not a class) hides rows, React resets className */
     li[data-gh-pr-filtered] { display: none !important; }
@@ -297,7 +291,6 @@
         alignItems: "center",
         justifyContent: "flex-start",
         gap: `${AVATAR_GAP}px`,
-        width: `${CELL_WIDTH}px`,
         flexShrink: "0",
         height: `${AVATAR_SIZE}px`,
         padding: "0 2px", // room for the 2px status ring on the outer avatars
