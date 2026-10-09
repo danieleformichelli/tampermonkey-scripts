@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub PR list — Show opener avatar on the left, and reviewers instead of assignees on the right
 // @namespace    https://github.com/danieleformichelli
-// @version      1.0.0
+// @version      1.0.1
 // @description  Show opener avatar on the left, and reviewers in place of the assignees.
 // @author       Daniele Formichelli
 // @match        https://github.com/*/*/pulls*
@@ -15,6 +15,11 @@
 
   // ---- config ---------------------------------------------------------------
   const MAX_AVATARS = 4; // avatars before a "+N" badge
+  const AVATAR_SIZE = 20; // px
+  const AVATAR_GAP = 8; // px between reviewer avatars; the 2px status ring eats into it on both sides
+  const MORE_WIDTH = 24; // px reserved for the "+N" badge
+  // fixed so every row's cell is the same width and the metadata columns line up across rows
+  const CELL_WIDTH = MAX_AVATARS * AVATAR_SIZE + MAX_AVATARS * AVATAR_GAP + MORE_WIDTH;
   const CONCURRENCY = 25; // parallel sidebar fetches (one PR-list page)
   const FALLBACK_TO_ASSIGNEES = false; // never show assignees again once reviewers are the point
   const IGNORE_REVIEWERS = [/cursor/i, /copilot/i, /tractive-guardian/i]; // reviewer logins/teams to drop
@@ -29,14 +34,31 @@
   const DEBUG = false; // set true to log per-row activity to the console
   const [owner, repo] = location.pathname.split('/').filter(Boolean);
   if (!owner || !repo) return;
-  window.__ghPrReviewers = { version: '1.0.0', owner, repo, loadedAt: Date.now() };
+  window.__ghPrReviewers = { version: '1.0.1', owner, repo, loadedAt: Date.now() };
   if (DEBUG) console.log('[gh-pr-reviewers] loaded for', owner + '/' + repo);
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pullHref = new RegExp(`^/${esc(owner)}/${esc(repo)}/pull/(\\d+)/?$`);
 
-  // hide assignees in flagged rows; a stylesheet survives React replacing the node
+  // a stylesheet survives React replacing nodes or resetting the row's className.
+  // - assignees are an alignRight item (comfortable) or a fixed-width metadataAssignees column
+  //   (compact): hide them next to our cell, the opener avatar already says who owns the PR
+  // - switching layouts makes React append the new layout's metadata after our cell, so `order`
+  //   keeps the cell last without moving the node
+  // - compact view lays the cell out on a single line, so it centers; comfortable view spans
+  //   title + description, so pin the cell to the title line (offset measured in alignToTitle)
   const hideStyle = document.createElement('style');
-  hideStyle.textContent = 'li.gh-pr-reviewers-row [class*="alignRight"]{display:none !important}';
+  hideStyle.textContent = `
+    li.gh-pr-reviewers-row [class*="alignRight"],
+    li.gh-pr-reviewers-row [class*="metadataAssignees"],
+    [class*="MetadataContainer"]:has(> .gh-pr-reviewers) > [class*="alignRight"],
+    [class*="MetadataContainer"]:has(> .gh-pr-reviewers) > [class*="metadataAssignees"] { display: none !important; }
+    li > .gh-pr-opener { display: none !important; }
+    .gh-pr-reviewers { align-self: center; order: 9999; }
+    li:not([class*="listItemCompact"]) .gh-pr-reviewers {
+      align-self: flex-start;
+      margin-top: var(--gh-pr-reviewers-offset, 10px);
+    }
+  `;
   (document.head || document.documentElement).appendChild(hideStyle);
 
   // ---- fetch reviewers from the same-origin sidebar partial -----------------
@@ -157,8 +179,13 @@
       Object.assign(cell.style, {
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'flex-end',
-        gap: '4px',
+        justifyContent: 'flex-start',
+        gap: `${AVATAR_GAP}px`,
+        width: `${CELL_WIDTH}px`,
+        flexShrink: '0',
+        height: `${AVATAR_SIZE}px`,
+        paddingLeft: '2px', // keep the first avatar's ring from being clipped
+        boxSizing: 'content-box',
         marginLeft: 'auto',
       });
       meta.appendChild(cell);
@@ -172,18 +199,31 @@
     const link = row.querySelector('[data-testid="author-filter-link"]');
     if (!link) return null;
     try {
-      // href is "...?q=is%3Apr+...author%3A<login>"; the aria-label may carry a display name
+      // href is "...?q=is%3Apr+...author%3A<login>"
       const q = decodeURIComponent(link.getAttribute('href') || '');
       const m = /author:([^&\s]+)/.exec(q);
-      return m ? m[1] : null;
+      if (m) return m[1];
     } catch (err) {
-      return null;
+      // fall through to the label
     }
+    // GitHub may render a <button> without href; its label is "Filter by author <Name (login)|login>"
+    const label = (link.getAttribute('aria-label') || '').replace(/^Filter by author\s+/, '').trim();
+    const paren = /\(([\w-]+(?:\[bot\])?)\)$/.exec(label);
+    if (paren) return paren[1];
+    return /^[\w-]+(?:\[bot\])?$/.test(label) ? label : null;
   }
 
   function addOpener(row) {
     const title = row.querySelector('[data-listview-item-title-container]');
-    if (!title || title.querySelector(':scope > .gh-pr-opener')) return;
+    if (!title) return;
+    // inside the <h3> so it flows with the title text in both compact and comfortable layouts
+    const heading = title.querySelector('h3');
+    const host = heading || title;
+    // drop openers left elsewhere in the row (e.g. after React re-rendered around them)
+    for (const stray of row.querySelectorAll('.gh-pr-opener')) {
+      if (stray.parentElement !== host) stray.remove();
+    }
+    if (host.querySelector(':scope > .gh-pr-opener')) return;
     const login = authorLogin(row);
     if (!login) return;
 
@@ -230,8 +270,28 @@
     );
     a.appendChild(img);
 
-    const heading = title.querySelector('h3');
-    title.insertBefore(a, heading || title.firstChild);
+    host.insertBefore(a, host.firstChild);
+  }
+
+  // comfortable rows: line the reviewers cell up with the opener on the title line.
+  // Every row shares the same geometry, so one measurement drives a CSS variable for all.
+  let titleOffset = null;
+  function alignToTitle(rows) {
+    for (const row of rows) {
+      if (/listItemCompact/.test(row.className)) continue;
+      const opener = row.querySelector('.gh-pr-opener');
+      const meta = row.querySelector('[class*="MetadataContainer"]');
+      if (!opener || !meta) continue;
+      const o = opener.getBoundingClientRect();
+      const m = meta.getBoundingClientRect();
+      if (!o.height || !m.height) continue;
+      const offset = Math.round(o.top - m.top);
+      if (offset !== titleOffset) {
+        titleOffset = offset;
+        document.documentElement.style.setProperty('--gh-pr-reviewers-offset', `${offset}px`);
+      }
+      return;
+    }
   }
 
   function avatarNode(r) {
@@ -241,14 +301,21 @@
     a.target = '_blank';
     a.rel = 'noopener';
     a.title = `${r.name} - ${s.label}`;
-    Object.assign(a.style, { display: 'inline-flex', alignItems: 'center' });
+    Object.assign(a.style, {
+      display: 'inline-flex',
+      alignItems: 'center',
+      flexShrink: '0',
+      width: `${AVATAR_SIZE}px`,
+      height: `${AVATAR_SIZE}px`,
+      lineHeight: '0',
+    });
 
     if (r.avatar) {
       const img = document.createElement('img');
       img.src = r.avatar;
       img.alt = r.name;
-      img.width = 20;
-      img.height = 20;
+      img.width = AVATAR_SIZE;
+      img.height = AVATAR_SIZE;
       Object.assign(img.style, {
         borderRadius: '50%',
         boxShadow: `0 0 0 2px ${s.color}`,
@@ -260,8 +327,9 @@
       const span = document.createElement('span');
       span.textContent = initial(r.name);
       Object.assign(span.style, {
-        width: '20px',
-        height: '20px',
+        width: `${AVATAR_SIZE}px`,
+        height: `${AVATAR_SIZE}px`,
+        lineHeight: 'normal',
         borderRadius: '50%',
         display: 'inline-flex',
         alignItems: 'center',
@@ -287,7 +355,7 @@
         .slice(MAX_AVATARS)
         .map((r) => r.name)
         .join(', ');
-      Object.assign(more.style, { fontSize: '11px', color: 'var(--fgColor-muted, #8b949e)' });
+      Object.assign(more.style, { fontSize: '11px', lineHeight: `${AVATAR_SIZE}px`, color: 'var(--fgColor-muted, #8b949e)' });
       cell.appendChild(more);
     }
   }
@@ -362,6 +430,7 @@
         }),
       );
     }
+    alignToTitle(rows.values());
   }
 
   let pending = false;
