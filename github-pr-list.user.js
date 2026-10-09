@@ -6,7 +6,7 @@
 // @author       Daniele Formichelli
 // @match        https://github.com/*
 // @icon         https://github.githubassets.com/favicons/favicon.svg
-// @run-at       document-idle
+// @run-at       document-start
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -81,19 +81,27 @@
     return true;
   }
 
-  // a stylesheet survives React replacing nodes or resetting the row's className.
+  // a stylesheet survives React replacing nodes or resetting the row's className, and applies
+  // from the first paint (the script runs at document-start), before any row is processed.
   // - assignees are an alignRight item (comfortable) or a fixed-width metadataAssignees column
-  //   (compact): hide them next to our cell, the opener avatar already says who owns the PR
+  //   (compact): hide them, the opener avatar already says who owns the PR. Unscoped unless
+  //   FALLBACK_TO_ASSIGNEES, so they never flash in while the script catches up
+  // - until a row gets its reviewers cell, an empty placeholder of the same size holds its place,
+  //   so the columns don't jump when the cell arrives
   // - switching layouts makes React append the new layout's metadata after our cell, so `order`
   //   keeps the cell last without moving the node
   // - the cell centres vertically like GitHub's own metadata items, so it lines up with the
   //   comment count in both layouts
+  const assigneeScope = FALLBACK_TO_ASSIGNEES ? "li.gh-pr-reviewers-row " : "";
   const hideStyle = document.createElement("style");
   hideStyle.textContent = `
-    li.gh-pr-reviewers-row [class*="alignRight"],
-    li.gh-pr-reviewers-row [class*="metadataAssignees"],
-    [class*="MetadataContainer"]:has(> .gh-pr-reviewers) > [class*="alignRight"],
-    [class*="MetadataContainer"]:has(> .gh-pr-reviewers) > [class*="metadataAssignees"] { display: none !important; }
+    ${assigneeScope}[class*="MetadataContainer"] > [class*="alignRight"],
+    ${assigneeScope}[class*="MetadataContainer"] > [class*="metadataAssignees"] { display: none !important; }
+    [class*="MetadataContainer"]:not(:has(> .gh-pr-reviewers))::after {
+      content: ""; flex: 0 0 ${CELL_WIDTH + 4}px; height: ${AVATAR_SIZE}px;
+      align-self: center; order: 9999; margin-left: auto;
+    }
+    li[class*="listItemCompact"] [class*="MetadataContainer"]:not(:has(> .gh-pr-reviewers))::after { margin-left: -16px; }
     li > .gh-pr-opener { display: none !important; }
     /* comfortable view already shows the author's avatar next to their name under the title */
     li:not([class*="listItemCompact"]) .gh-pr-opener { display: none !important; }
@@ -645,19 +653,21 @@
     el.hidden = entries.length === 0;
   }
 
-  let pendingTimer = null;
+  // next frame, before it paints: coalesces bursts without the bar visibly popping in late
+  let pendingFrame = null;
   function schedulePending() {
-    if (pendingTimer) return;
-    pendingTimer = setTimeout(() => {
-      pendingTimer = null;
+    if (pendingFrame) return;
+    pendingFrame = requestAnimationFrame(() => {
+      pendingFrame = null;
       updatePending();
-    }, 100);
+    });
   }
 
   // ---- main loop ------------------------------------------------------------
   function collectRows() {
     const rows = new Map(); // num -> <li>
-    for (const a of document.querySelectorAll("a[href]")) {
+    // runs every frame while the page renders, so only look at links that can be PR links
+    for (const a of document.querySelectorAll('a[href*="/pull/"]')) {
       let pathname;
       try {
         pathname = new URL(a.href, location.href).pathname;
@@ -718,14 +728,16 @@
   // ---- lifecycle ------------------------------------------------------------
   // Off the PR list the script only listens for URL changes: no DOM observer, no stylesheet.
   // The observer is attached on entering a PR list and disconnected on leaving it.
-  let pending = false;
+  // Runs are batched to the next animation frame, which still comes before that frame paints, so
+  // rows GitHub renders show up already processed. run() is idempotent and only touches the DOM
+  // when something is missing, so it settles once the page stops changing.
+  let runFrame = null;
   function queueRun() {
-    if (pending) return;
-    pending = true;
-    setTimeout(() => {
-      pending = false;
+    if (runFrame) return;
+    runFrame = requestAnimationFrame(() => {
+      runFrame = null;
       run();
-    }, 300);
+    });
   }
 
   let observer = null;
@@ -737,12 +749,16 @@
       if (!hideStyle.isConnected) (document.head || document.documentElement).appendChild(hideStyle);
       if (!observer) {
         observer = new MutationObserver(queueRun);
-        observer.observe(document.body, { childList: true, subtree: true });
+        // documentElement, not body: at document-start the body doesn't exist yet
+        observer.observe(document.documentElement, { childList: true, subtree: true });
       }
       queueRun(); // the list may already be rendered, or render without further mutations
     } else if (observer) {
       observer.disconnect();
       observer = null;
+      // its selectors target GitHub's shared list components, so left in place it would also hide
+      // assignees on e.g. the issues list, and cost style matching on every page after
+      hideStyle.remove();
       run(); // tidies up: removes the bar, forgets the last list URL
     }
   }
