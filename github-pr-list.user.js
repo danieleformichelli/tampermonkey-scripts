@@ -22,7 +22,9 @@
   const CELL_WIDTH = MAX_AVATARS * AVATAR_SIZE + MAX_AVATARS * AVATAR_GAP + MORE_WIDTH;
   const CONCURRENCY = 25; // parallel sidebar fetches (one PR-list page)
   const FALLBACK_TO_ASSIGNEES = false; // never show assignees again once reviewers are the point
-  const IGNORE_REVIEWERS = [/cursor/i, /copilot/i, /tractive-guardian/i]; // reviewer logins/teams to drop
+  // machine users: regular accounts run by automation, which nothing in the markup tells apart from
+  // people (app bots are detected by isBot). Exact logins, case-insensitive.
+  const BOT_LOGINS = ['tractive-guardian'];
   // `icon` is an official Primer Octicon path (MIT), drawn as a badge on the avatar's corner for
   // states the ring colour alone doesn't tell apart (both are muted grey)
   const STATUS = {
@@ -137,6 +139,23 @@
   }
 
   // ---- parse the sidebar partial -------------------------------------------
+  // GitHub marks app accounts structurally, so no guessing from the login: people link to /<login>
+  // with hovercard type "user", teams to /orgs/... with "team"; apps (Copilot, Cursor, Renovate, ...)
+  // link to /apps/<slug> and carry their own hovercard type, e.g. "copilot" or "bot".
+  // Machine users look like people, so they come from BOT_LOGINS.
+  const botLogins = new Set(BOT_LOGINS.map((l) => l.toLowerCase()));
+  function isBot(span, link, name) {
+    const href = link ? link.getAttribute('href') || '' : '';
+    const type = span.getAttribute('data-hovercard-type') || '';
+    return (
+      href.startsWith('/apps/') ||
+      type === 'bot' ||
+      type === 'copilot' ||
+      /\[bot\]$/i.test(name) ||
+      botLogins.has(name.toLowerCase())
+    );
+  }
+
   function parseReviewers(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const out = [];
@@ -155,7 +174,7 @@
       const img = span.querySelector('img.avatar');
       const link = span.querySelector('a.assignee');
       const name = span.getAttribute('data-assignee-name');
-      if (IGNORE_REVIEWERS.some((re) => re.test(name))) continue;
+      if (isBot(span, link, name)) continue;
       out.push({
         name,
         avatar: img ? img.getAttribute('src') : null,
