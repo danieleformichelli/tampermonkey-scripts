@@ -1,15 +1,12 @@
 // ==UserScript==
 // @name         GitHub PR list — Show opener avatar on the left, and reviewers instead of assignees on the right
 // @namespace    https://github.com/danieleformichelli/tampermonkey-scripts
-// @version      1.0.1
+// @version      1.0.2
 // @description  Show opener avatar on the left, and reviewers in place of the assignees.
 // @author       Daniele Formichelli
 // @match        https://github.com/*
 // @icon         https://github.githubassets.com/favicons/favicon.svg
 // @run-at       document-start
-// @grant        GM_getValue
-// @grant        GM_setValue
-// @grant        GM_registerMenuCommand
 // ==/UserScript==
 
 (function () {
@@ -19,27 +16,8 @@
   const MAX_AVATARS = 5; // avatars before a "+N" badge
   const AVATAR_SIZE = 20; // px
   const AVATAR_GAP = 8; // px between reviewer avatars; the 2px status ring eats into it on both sides
-  // compact view: fixed so every row's cell is the same width and the metadata columns line up
-  // across rows (comfortable view sizes it to its avatars); the "+N" overflow takes the last
-  // avatar slot, so no extra room is reserved for it
   const CELL_WIDTH = MAX_AVATARS * AVATAR_SIZE + (MAX_AVATARS - 1) * AVATAR_GAP;
   const CONCURRENCY = 25; // parallel sidebar fetches (one PR-list page)
-  const FALLBACK_TO_ASSIGNEES = false; // never show assignees again once reviewers are the point
-  // reviewers to hide on top of the app bots isBot drops, e.g. machine users (regular accounts run
-  // by automation, which nothing in the markup tells apart from people). Configurable from the
-  // Tampermonkey menu; entries match case-insensitively anywhere in the login.
-  let ignoreList = ["cursor", "copilot"];
-  try {
-    const saved = GM_getValue("ignoreReviewers", null);
-    if (Array.isArray(saved)) ignoreList = saved;
-  } catch (err) {
-    /* storage unavailable; keep defaults */
-  }
-  const isIgnored = (name) => ignoreList.some((entry) => name.toLowerCase().includes(String(entry).toLowerCase()));
-  // applied when rendering, not when parsing, so a menu change takes effect without refetching
-  const visibleReviewers = (list) => (list || []).filter((r) => !isIgnored(r.name));
-  // `icon` is an official Primer Octicon path (MIT), drawn as a badge on the avatar's corner for
-  // states the ring colour alone doesn't tell apart (both are muted grey)
   const STATUS = {
     approved: { color: "var(--fgColor-success, #2da44e)", label: "approved these changes" },
     changes: { color: "var(--fgColor-danger, #cf222e)", label: "requested changes" },
@@ -57,12 +35,9 @@
       icon: "M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z",
     },
   };
-  const BADGE_SIZE = 13; // px, status octicon badge on the avatar's bottom-right corner
 
   // ---- context --------------------------------------------------------------
-  const DEBUG = false; // set true to log per-row activity to the console
-  // GitHub navigates in-page (e.g. commits/branches -> Pull requests), so the script runs on every
-  // page and re-reads the repo from the URL on each pass; it only acts on a repo's PR list.
+  const DEBUG = false;
   const PULLS_PATH = /^\/([^/]+)\/([^/]+)\/pulls(?:\/|$)/;
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   let owner = null;
@@ -82,23 +57,18 @@
     return true;
   }
 
-  // a stylesheet survives React replacing nodes or resetting the row's className, and applies
-  // from the first paint (the script runs at document-start), before any row is processed.
-  // - assignees are an alignRight item (comfortable) or a fixed-width metadataAssignees column
-  //   (compact): hide them, the opener avatar already says who owns the PR. Unscoped unless
-  //   FALLBACK_TO_ASSIGNEES, so they never flash in while the script catches up
-  // - compact view gives the cell a fixed width so its columns line up across rows; until a row
-  //   gets its cell, an empty placeholder of that size holds its place, so the columns don't jump.
-  //   Comfortable view has no columns, so the cell just fits its avatars, right-aligned
-  // - switching layouts makes React append the new layout's metadata after our cell, so `order`
-  //   keeps the cell last without moving the node
-  // - the cell centres vertically like GitHub's own metadata items, so it lines up with the
-  //   comment count in both layouts
-  const assigneeScope = FALLBACK_TO_ASSIGNEES ? "li.gh-pr-reviewers-row " : "";
+  // a stylesheet survives React replacing nodes or resetting the row's className, and applies from the first paint (the script runs at
+  // document-start), before any row is processed.
+  // - assignees are an alignRight item (comfortable) or a fixed-width metadataAssignees column (compact): hide them, the opener avatar
+  //   already says who owns the PR
+  // - compact view gives the cell a fixed width so its columns line up across rows; until a row gets its cell, an empty placeholder of that
+  //   size holds its place, so the columns don't jump. Comfortable view has no columns, so the cell just fits its avatars, right-aligned
+  // - switching layouts makes React append the new layout's metadata after our cell, so `order` keeps the cell last without moving the node
+  // - the cell centres vertically like GitHub's own metadata items, so it lines up with the comment count in both layouts
   const hideStyle = document.createElement("style");
   hideStyle.textContent = `
-    ${assigneeScope}[class*="MetadataContainer"] > [class*="alignRight"],
-    ${assigneeScope}[class*="MetadataContainer"] > [class*="metadataAssignees"] { display: none !important; }
+    [class*="MetadataContainer"] > [class*="alignRight"],
+    [class*="MetadataContainer"] > [class*="metadataAssignees"] { display: none !important; }
     li[class*="listItemCompact"] [class*="MetadataContainer"]:not(:has(> .gh-pr-reviewers))::after {
       content: ""; flex: 0 0 ${CELL_WIDTH + 4}px; height: ${AVATAR_SIZE}px;
       align-self: center; order: 9999; margin-left: -16px;
@@ -113,8 +83,8 @@
   // attached by onUrlChange on the first visit to a PR list
 
   // ---- fetch reviewers from the same-origin sidebar partial -----------------
-  // keyed "owner/repo#num": in-page navigation can switch repos while fetches are in flight.
-  // Cleared on every URL change, so returning to the list refetches instead of showing stale data.
+  // keyed "owner/repo#num": in-page navigation can switch repos while fetches are in flight. Cleared on every URL change, so returning to
+  // the list refetches instead of showing stale data.
   const cache = new Map();
   const inflight = new Map();
   const cacheKey = (num) => `${owner}/${repo}#${num}`;
@@ -192,14 +162,10 @@
   }
 
   // ---- parse the sidebar partial -------------------------------------------
-  // GitHub marks app accounts structurally, so no guessing from the login: people link to /<login>
-  // with hovercard type "user", teams to /orgs/... with "team"; apps (Copilot, Cursor, Renovate, ...)
-  // link to /apps/<slug> and carry their own hovercard type, e.g. "copilot" or "bot".
-  // Machine users look like people, so they go in the ignore list.
   function isBot(span, link, name) {
     const href = link ? link.getAttribute("href") || "" : "";
     const type = span.getAttribute("data-hovercard-type") || "";
-    return href.startsWith("/apps/") || type === "bot" || type === "copilot" || /\[bot\]$/i.test(name);
+    return href.startsWith("/apps/") || type === "bot" || type === "copilot" || /\[bot]$/i.test(name);
   }
 
   function parseReviewers(html) {
@@ -289,9 +255,9 @@
     }
     // GitHub may render a <button> without href; its label is "Filter by author <Name (login)|login>"
     const label = (link.getAttribute("aria-label") || "").replace(/^Filter by author\s+/, "").trim();
-    const paren = /\(([\w-]+(?:\[bot\])?)\)$/.exec(label);
+    const paren = /\(([\w-]+(?:\[bot])?)\)$/.exec(label);
     if (paren) return paren[1];
-    return /^[\w-]+(?:\[bot\])?$/.test(label) ? label : null;
+    return /^[\w-]+(?:\[bot])?$/.test(label) ? label : null;
   }
 
   function addOpener(row) {
@@ -307,8 +273,8 @@
     if (host.querySelector(":scope > .gh-pr-opener")) return;
     const login = authorLogin(row);
     if (!login) return;
-    // clicking filters the list by author, like GitHub's own link; when GitHub renders that as a
-    // <button> without href, build the same search
+    // clicking filters the list by author, like GitHub's own link; when GitHub renders that as a <button> without href, build the same
+    // search
     const link = row.querySelector('[data-testid="author-filter-link"]');
     let filterHref = link && link.getAttribute("href");
     if (!filterHref) {
@@ -361,8 +327,6 @@
     host.insertBefore(a, host.firstChild);
   }
 
-  // clicking a reviewer searches this repo's open PRs: still waiting on them if their review is
-  // pending, otherwise the ones they reviewed. Teams can only be requested, never review.
   function reviewerSearch(r) {
     const team = /^\/orgs\/([^/]+)\/teams\/([^/]+)/.exec(r.href || "");
     let filter;
@@ -370,12 +334,9 @@
     if (team) {
       filter = `team-review-requested:${team[1]}/${team[2]}`;
       what = "open PRs requesting review from this team";
-    } else if (r.status === "pending") {
-      filter = `review-requested:${r.name}`;
-      what = `open PRs waiting on ${r.name}'s review`;
     } else {
-      filter = `reviewed-by:${r.name}`;
-      what = `open PRs reviewed by ${r.name}`;
+      filter = `(review-requested:${r.name} OR reviewed-by:${r.name})`;
+      what = `open PRs waiting on ${r.name}'s review or already reviewed by them`;
     }
     const url = new URL(`/${owner}/${repo}/pulls`, location.origin);
     url.searchParams.set("q", `is:pr is:open sort:updated-desc ${filter}`);
@@ -438,8 +399,8 @@
     const svg = document.createElementNS(NS, "svg");
     for (const [key, value] of Object.entries({
       viewBox: "0 0 16 16",
-      width: String(BADGE_SIZE),
-      height: String(BADGE_SIZE),
+      width: String(12),
+      height: String(12),
       fill: "currentColor",
       "aria-hidden": "true",
       focusable: "false",
@@ -466,8 +427,6 @@
 
   function renderCell(cell, reviewers) {
     cell.textContent = "";
-    // dismissed reviews matter least, so they're the first to fall into the "+N" overflow;
-    // sort is stable, so everyone else keeps the sidebar's order
     reviewers = [...reviewers].sort((a, b) => (a.status === "dismissed") - (b.status === "dismissed"));
     // up to MAX_AVATARS fit; beyond that the last slot becomes a "+N" circle
     const shown = reviewers.length > MAX_AVATARS ? reviewers.slice(0, MAX_AVATARS - 1) : reviewers;
@@ -505,11 +464,10 @@
     }
 
     const cell = ensureCell(row, meta);
-    const visible = visibleReviewers(reviewers);
-    const has = visible.length > 0;
+    const has = reviewers.length > 0;
     // order-independent, so a reshuffled sidebar doesn't force a repaint
     const sig = has
-      ? visible
+      ? reviewers
           .map((r) => r.name + ":" + r.status)
           .sort()
           .join("|")
@@ -518,10 +476,10 @@
     cell.dataset.ghSig = sig;
     cell.dataset.ghDone = "1";
 
-    row.classList.toggle("gh-pr-reviewers-row", has || !FALLBACK_TO_ASSIGNEES);
+    row.classList.add("gh-pr-reviewers-row");
     cell.textContent = "";
-    cell.style.display = has || !FALLBACK_TO_ASSIGNEES ? "flex" : "none";
-    if (has) renderCell(cell, visible);
+    cell.style.display = "flex";
+    if (has) renderCell(cell, reviewers);
   }
 
   // ---- main loop ------------------------------------------------------------
@@ -550,8 +508,7 @@
       return;
     }
     if (location.href !== lastHref) {
-      // a new list (or the same one revisited): refetch so reviewers aren't stale; the stored
-      // copy still paints instantly while the fetches run
+      // a new list (or the same one revisited): refetch so reviewers aren't stale; the stored copy still paints instantly while fetching
       lastHref = location.href;
       cache.clear();
     }
@@ -583,11 +540,10 @@
   }
 
   // ---- lifecycle ------------------------------------------------------------
-  // Off the PR list the script only listens for URL changes: no DOM observer, no stylesheet.
-  // The observer is attached on entering a PR list and disconnected on leaving it.
-  // Runs are batched to the next animation frame, which still comes before that frame paints, so
-  // rows GitHub renders show up already processed. run() is idempotent and only touches the DOM
-  // when something is missing, so it settles once the page stops changing.
+  // Off the PR list the script only listens for URL changes: no DOM observer, no stylesheet. The observer is attached on entering a PR list
+  // and disconnected on leaving it. Runs are batched to the next animation frame, which still comes before that frame paints, so rows
+  // GitHub renders show up already processed. run() is idempotent and only touches the DOM when something is missing, so it settles once
+  // the page stops changing.
   let runFrame = null;
   function queueRun() {
     if (runFrame) return;
@@ -613,15 +569,15 @@
     } else if (observer) {
       observer.disconnect();
       observer = null;
-      // its selectors target GitHub's shared list components, so left in place it would also hide
-      // assignees on e.g. the issues list, and cost style matching on every page after
+      // its selectors target GitHub's shared list components, so left in place it would also hide assignees on e.g. the issues list, and
+      // cost style matching on every page after
       hideStyle.remove();
       run(); // tidies up: forgets the last list URL
     }
   }
 
-  // GitHub navigates with history.pushState, which fires no event of its own. The Navigation API
-  // reports it; where that's missing, fall back to a cheap once-a-second URL comparison.
+  // GitHub navigates with history.pushState, which fires no event of its own. The Navigation API reports it; where that's missing, fall
+  // back to a cheap once-a-second URL comparison.
   if (window.navigation && typeof window.navigation.addEventListener === "function") {
     window.navigation.addEventListener("currententrychange", onUrlChange);
   } else {
@@ -629,28 +585,6 @@
   }
   window.addEventListener("popstate", onUrlChange);
   document.addEventListener("turbo:load", onUrlChange);
-
-  if (typeof GM_registerMenuCommand === "function") {
-    GM_registerMenuCommand("Configure hidden reviewers", () => {
-      const input = prompt("Reviewers to hide (comma-separated, case-insensitive):", ignoreList.join(", "));
-      if (input === null) return;
-      ignoreList = input
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      try {
-        GM_setValue("ignoreReviewers", ignoreList);
-      } catch (err) {
-        /* storage unavailable */
-      }
-      // force a repaint with the new filter
-      document.querySelectorAll(".gh-pr-reviewers").forEach((cell) => {
-        delete cell.dataset.ghSig;
-        delete cell.dataset.ghDone;
-      });
-      run();
-    });
-  }
 
   onUrlChange();
 })();
