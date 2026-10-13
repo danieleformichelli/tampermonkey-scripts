@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub PR list — Show opener avatar on the left, and reviewers instead of assignees on the right
 // @namespace    https://github.com/danieleformichelli/tampermonkey-scripts
-// @version      1.0.2
+// @version      1.0.3
 // @description  Show opener avatar on the left, and reviewers in place of the assignees.
 // @author       Daniele Formichelli
 // @match        https://github.com/*
@@ -63,21 +63,24 @@
   //   already says who owns the PR
   // - compact view gives the cell a fixed width so its columns line up across rows; until a row gets its cell, an empty placeholder of that
   //   size holds its place, so the columns don't jump. Comfortable view has no columns, so the cell just fits its avatars, right-aligned
-  // - switching layouts makes React append the new layout's metadata after our cell, so `order` keeps the cell last without moving the node
+  // - switching layouts makes React append the new layout's metadata after our cell, so `order` positions the cell without moving the node
+  // - GitHub's comment count is an ordinary flex child that would land before our cell and drift left as avatars pile up, so it is ordered after
+  //   the cell: the comment icon keeps the rightmost column on every row and the avatars grow leftwards from it
   // - the cell centres vertically like GitHub's own metadata items, so it lines up with the comment count in both layouts
   const hideStyle = document.createElement("style");
   hideStyle.textContent = `
     [class*="MetadataContainer"] > [class*="alignRight"],
     [class*="MetadataContainer"] > [class*="metadataAssignees"] { display: none !important; }
+    .gh-pr-reviewers-row :has(> .octicon-comment) { order: 10000; }
     li[class*="listItemCompact"] [class*="MetadataContainer"]:not(:has(> .gh-pr-reviewers))::after {
       content: ""; flex: 0 0 ${CELL_WIDTH + 4}px; height: ${AVATAR_SIZE}px;
-      align-self: center; order: 9999; margin-left: -16px;
+      align-self: center; order: 9999; margin-right: -16px;
     }
     li > .gh-pr-opener { display: none !important; }
     .gh-pr-reviewers { align-self: center; order: 9999; }
-    /* compact cells are a fixed 72px with centred content, so the comment count before us leaves
-       ~20px empty on its right; pull the reviewers into it (the 8px column gap still separates them) */
-    li[class*="listItemCompact"] .gh-pr-reviewers { width: ${CELL_WIDTH}px; margin-left: -16px !important; }
+    /* compact cells are a fixed 72px with centred content, so the comment count now after us leaves
+       ~20px empty on its left; pull the reviewers into it (the 8px column gap still separates them) */
+    li[class*="listItemCompact"] .gh-pr-reviewers { width: ${CELL_WIDTH}px; margin-left: 0 !important; margin-right: -16px !important; }
 
   `;
   // attached by onUrlChange on the first visit to a PR list
