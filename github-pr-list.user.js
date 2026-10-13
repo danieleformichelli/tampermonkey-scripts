@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub PR list — Show opener avatar on the left, and reviewers instead of assignees on the right
 // @namespace    https://github.com/danieleformichelli/tampermonkey-scripts
-// @version      1.0.2
+// @version      1.0.3
 // @description  Show opener avatar on the left, and reviewers in place of the assignees.
 // @author       Daniele Formichelli
 // @match        https://github.com/*
@@ -65,11 +65,13 @@
   //   size holds its place, so the columns don't jump. Comfortable view has no columns, so the cell just fits its avatars, right-aligned
   // - switching layouts makes React append the new layout's metadata after our cell, so `order` keeps the cell last without moving the node
   // - the cell centres vertically like GitHub's own metadata items, so it lines up with the comment count in both layouts
+  const ROW = 'ul[data-listview-component="items-list"] > li';
+  const COMPACT_ROW = `:is(ul[data-density="compact"] > li, li[class*="listItemCompact"])`;
   const hideStyle = document.createElement("style");
   hideStyle.textContent = `
-    [class*="MetadataContainer"] > [class*="alignRight"],
-    [class*="MetadataContainer"] > [class*="metadataAssignees"] { display: none !important; }
-    li[class*="listItemCompact"] [class*="MetadataContainer"]:not(:has(> .gh-pr-reviewers))::after {
+    ${ROW} > :last-child > [class*="alignRight"],
+    ${ROW} > :last-child > [class*="metadataAssignees"] { display: none !important; }
+    ${COMPACT_ROW} > :last-child:not([data-listview-item-title-container]):not(:has(> .gh-pr-reviewers))::after {
       content: ""; flex: 0 0 ${CELL_WIDTH + 4}px; height: ${AVATAR_SIZE}px;
       align-self: center; order: 9999; margin-left: -16px;
     }
@@ -77,8 +79,7 @@
     .gh-pr-reviewers { align-self: center; order: 9999; }
     /* compact cells are a fixed 72px with centred content, so the comment count before us leaves
        ~20px empty on its right; pull the reviewers into it (the 8px column gap still separates them) */
-    li[class*="listItemCompact"] .gh-pr-reviewers { width: ${CELL_WIDTH}px; margin-left: -16px !important; }
-
+    ${COMPACT_ROW} .gh-pr-reviewers { width: ${CELL_WIDTH}px; margin-left: -16px !important; }
   `;
   // attached by onUrlChange on the first visit to a PR list
 
@@ -456,10 +457,19 @@
     }
   }
 
+  // The row's metadata column (comments, assignees, ...; where the reviewers cell goes). Its class name is generated and changes, but a row
+  // is always laid out as title, leading icon, main content, metadata, so it's the last child. The checks guard against that order changing.
+  function metadataContainer(row) {
+    const last = row.lastElementChild;
+    if (!last || last.matches("[data-listview-item-title-container]") || last.querySelector('[data-testid="timestamp-container"]'))
+      return null;
+    return last;
+  }
+
   function apply(row, reviewers) {
-    const meta = row.querySelector('[class*="MetadataContainer"]');
+    const meta = metadataContainer(row);
     if (!meta) {
-      if (DEBUG) console.warn("[gh-pr-reviewers] no MetadataContainer in row, skipping");
+      if (DEBUG) console.warn("[gh-pr-reviewers] no metadata container in row, skipping");
       return;
     }
 
@@ -522,7 +532,7 @@
     }
     for (const [num, row] of rows) {
       // flag the row (CSS hides its assignees instantly), then fill reviewers
-      const meta = row.querySelector('[class*="MetadataContainer"]');
+      const meta = metadataContainer(row);
       if (!meta) continue;
       row.classList.add("gh-pr-reviewers-row");
       ensureCell(row, meta);
