@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub PR list — Show opener avatar on the left, and reviewers instead of assignees on the right
 // @namespace    https://github.com/danieleformichelli/tampermonkey-scripts
-// @version      1.0.3
+// @version      1.0.4
 // @description  Show opener avatar on the left, and reviewers in place of the assignees.
 // @author       Daniele Formichelli
 // @match        https://github.com/*
@@ -457,23 +457,18 @@
     }
   }
 
-  // The row's metadata column (comments, assignees, ...; where the reviewers cell goes). Its class name is generated and changes, but a row
-  // is always laid out as title, leading icon, main content, metadata, so it's the last child. The checks guard against that order changing.
+  // The row's metadata column (comments, checks, ...; where the reviewers cell goes). Its class name is generated and changes, so it is
+  // found structurally: the row's last child, unless that child is the title or carries the timestamp (i.e. it is the main content) — then
+  // the layout has no metadata column and the cell goes in the row itself, rather than leaving the row untouched.
   function metadataContainer(row) {
     const last = row.lastElementChild;
     if (!last || last.matches("[data-listview-item-title-container]") || last.querySelector('[data-testid="timestamp-container"]'))
-      return null;
+      return row;
     return last;
   }
 
   function apply(row, reviewers) {
-    const meta = metadataContainer(row);
-    if (!meta) {
-      if (DEBUG) console.warn("[gh-pr-reviewers] no metadata container in row, skipping");
-      return;
-    }
-
-    const cell = ensureCell(row, meta);
+    const cell = ensureCell(row, metadataContainer(row));
     const has = reviewers.length > 0;
     // order-independent, so a reshuffled sidebar doesn't force a repaint
     const sig = has
@@ -532,10 +527,8 @@
     }
     for (const [num, row] of rows) {
       // flag the row (CSS hides its assignees instantly), then fill reviewers
-      const meta = metadataContainer(row);
-      if (!meta) continue;
       row.classList.add("gh-pr-reviewers-row");
-      ensureCell(row, meta);
+      ensureCell(row, metadataContainer(row));
       addOpener(row);
 
       const cached = cachedReviewers(num);
