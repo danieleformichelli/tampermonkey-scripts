@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GitHub PR list — Show opener avatar on the left, and reviewers instead of assignees on the right
 // @namespace    https://github.com/danieleformichelli/tampermonkey-scripts
-// @version      1.0.4
-// @description  Show opener avatar on the left, and reviewers in place of the assignees.
+// @version      1.0.5
+// @description  Show opener avatar on the left, reviewers in place of the assignees, and keep other people's drafts off unfiltered lists.
 // @author       Daniele Formichelli
 // @match        https://github.com/*
 // @icon         https://github.githubassets.com/favicons/favicon.svg
@@ -55,6 +55,15 @@
     loadStore();
     if (DEBUG) console.log("[gh-pr-reviewers] now on", owner + "/" + repo);
     return true;
+  }
+
+  function redirectUrlIfNeeded() {
+    const BARE_PULLS_PATH = /^\/[^/]+\/[^/]+\/pulls\/?$/;
+    if (!BARE_PULLS_PATH.test(location.pathname)) return null;
+    const url = new URL(location.href);
+    if (url.searchParams.get("q")) return null;
+    url.searchParams.set("q", "is:pr is:open (draft:false OR author:@me)");
+    return url.href;
   }
 
   // a stylesheet survives React replacing nodes or resetting the row's className, and applies from the first paint (the script runs at
@@ -246,19 +255,21 @@
   function authorLogin(row) {
     const link = row.querySelector('[data-testid="author-filter-link"]');
     if (!link) return null;
-    try {
-      // href is "...?q=is%3Apr+...author%3A<login>"
-      const q = decodeURIComponent(link.getAttribute("href") || "");
-      const m = /author:([^&\s]+)/.exec(q);
-      if (m) return m[1];
-    } catch (err) {
-      // fall through to the label
-    }
-    // GitHub may render a <button> without href; its label is "Filter by author <Name (login)|login>"
+    // the label is "Filter by author <Name (login)|login>"; GitHub may render the link as a <button> without href
     const label = (link.getAttribute("aria-label") || "").replace(/^Filter by author\s+/, "").trim();
     const paren = /\(([\w-]+(?:\[bot])?)\)$/.exec(label);
     if (paren) return paren[1];
-    return /^[\w-]+(?:\[bot])?$/.test(label) ? label : null;
+    if (/^[\w-]+(?:\[bot])?$/.test(label)) return label;
+    try {
+      // href is "...?q=is%3Apr+...author%3A<login>". The current search can already carry an author qualifier (e.g. the draft query's
+      // author:@me), so the row's author is the last one.
+      const q = decodeURIComponent(link.getAttribute("href") || "");
+      const m = [...q.matchAll(/author:([\w-]+(?:\[bot])?)/g)].pop();
+      if (m) return m[1];
+    } catch (err) {
+      // fall through
+    }
+    return null;
   }
 
   function addOpener(row) {
@@ -274,19 +285,13 @@
     if (host.querySelector(":scope > .gh-pr-opener")) return;
     const login = authorLogin(row);
     if (!login) return;
-    // clicking filters the list by author, like GitHub's own link; when GitHub renders that as a <button> without href, build the same
-    // search
-    const link = row.querySelector('[data-testid="author-filter-link"]');
-    let filterHref = link && link.getAttribute("href");
-    if (!filterHref) {
-      const url = new URL(`/${owner}/${repo}/pulls`, location.origin);
-      url.searchParams.set("q", `is:pr is:open author:${login}`);
-      filterHref = url.href;
-    }
+    // GitHub's own author href appends the qualifier to the current search, which now already carries one (the draft query's author:@me)
+    const url = new URL(`/${owner}/${repo}/pulls`, location.origin);
+    url.searchParams.set("q", `is:pr is:open sort:updated-desc author:${login}`);
 
     const a = document.createElement("a");
     a.className = "gh-pr-opener";
-    a.href = filterHref;
+    a.href = url.href;
     a.title = `Filter by author ${login}`;
     Object.assign(a.style, {
       display: "inline-flex",
@@ -561,6 +566,11 @@
   function onUrlChange() {
     if (location.href === lastUrl) return;
     lastUrl = location.href;
+    const redirectUrl = redirectUrlIfNeeded();
+    if (redirectUrl) {
+      location.replace(redirectUrl);
+      return;
+    }
     if (PULLS_PATH.test(location.pathname)) {
       if (!hideStyle.isConnected) (document.head || document.documentElement).appendChild(hideStyle);
       if (!observer) {
