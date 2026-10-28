@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub PR list — Show opener avatar on the left, and reviewers instead of assignees on the right
 // @namespace    https://github.com/danieleformichelli/tampermonkey-scripts
-// @version      1.0.6
+// @version      1.0.7
 // @description  Show opener avatar on the left, reviewers in place of the assignees, and keep other people's drafts off unfiltered lists.
 // @author       Daniele Formichelli
 // @match        https://github.com/*
@@ -74,6 +74,8 @@
   //   size holds its place, so the columns don't jump. Comfortable view has no columns, so the cell just fits its avatars, right-aligned
   // - switching layouts makes React append the new layout's metadata after our cell, so `order` keeps the cell last without moving the node
   // - the cell centres vertically like GitHub's own metadata items, so it lines up with the comment count in both layouts
+  // - an unfiltered list keeps showing everyone's drafts until the redirect to the filtered query lands (a page load), so those rows are
+  //   flagged with a class the stylesheet hides
   const ROW = 'ul[data-listview-component="items-list"] > li';
   const COMPACT_ROW = `:is(ul[data-density="compact"] > li, li[class*="listItemCompact"])`;
   const hideStyle = document.createElement("style");
@@ -85,6 +87,7 @@
       align-self: center; order: 9999; margin-left: -16px;
     }
     li > .gh-pr-opener { display: none !important; }
+    li.gh-pr-other-draft { display: none !important; }
     .gh-pr-reviewers { align-self: center; order: 9999; }
     /* compact cells are a fixed 72px with centred content, so the comment count before us leaves
        ~20px empty on its right; pull the reviewers into it (the 8px column gap still separates them) */
@@ -512,7 +515,20 @@
     return rows;
   }
 
+  // an unfiltered list shows other people's drafts until the redirect to the filtered query lands, which is a page load: the rows that
+  // query would drop are hidden meanwhile, so the list on screen already matches what is about to load
+  const DRAFT_ICON = '[class~="octicon-git-pull-request-draft"]';
+  let myLogin = null;
+  function isOtherDraft(row) {
+    if (!row.querySelector(DRAFT_ICON)) return false;
+    const author = authorLogin(row);
+    if (!author) return false;
+    myLogin ??= (document.querySelector('meta[name="user-login"]')?.content || "").toLowerCase();
+    return !!myLogin && author.toLowerCase() !== myLogin;
+  }
+
   let lastHref = null;
+  let redirectPending = false; // the redirect to the filtered query is in flight, so the list on screen is still the unfiltered one
   function run() {
     if (!syncRepo()) {
       lastHref = null;
@@ -532,6 +548,10 @@
       );
     }
     for (const [num, row] of rows) {
+      if (redirectPending && isOtherDraft(row)) {
+        row.classList.add("gh-pr-other-draft");
+        continue;
+      }
       // flag the row (CSS hides its assignees instantly), then fill reviewers
       row.classList.add("gh-pr-reviewers-row");
       ensureCell(row, metadataContainer(row));
@@ -540,6 +560,8 @@
       const cached = cachedReviewers(num);
       if (cached) apply(row, cached); // paint last session's result instantly, refresh below
 
+      // the list is about to be replaced by the redirected one, so the fetch would only be thrown away
+      if (redirectPending) continue;
       schedule(() =>
         fetchReviewers(num).then((reviewers) => {
           if (reviewers !== null && row.isConnected) apply(row, reviewers);
@@ -600,10 +622,10 @@
     if (location.href === lastUrl) return;
     lastUrl = location.href;
     const redirectUrl = redirectUrlIfNeeded();
-    if (redirectUrl) {
-      location.replace(redirectUrl);
-      return;
-    }
+    // the redirect is a page load, so keep treating the list GitHub already rendered as a PR list: its other people's drafts are hidden
+    // until the filtered one commits
+    redirectPending = redirectUrl !== null;
+    if (redirectUrl) location.replace(redirectUrl);
     if (PULLS_PATH.test(location.pathname)) {
       stopStyleRelease();
       if (!hideStyle.isConnected) (document.head || document.documentElement).appendChild(hideStyle);
