@@ -495,7 +495,8 @@
   // ---- main loop ------------------------------------------------------------
   function collectRows() {
     const rows = new Map(); // num -> <li>
-    // runs every frame while the page renders, so only look at links that can be PR links
+    // runs every frame while the page renders, so only look at links that can be PR links. The row must be one of the list's own items:
+    // a link to the PR also sits in overlays (e.g. a check's "Details" target), and its list item is not a PR row
     for (const a of document.querySelectorAll('a[href*="/pull/"]')) {
       let pathname;
       try {
@@ -505,7 +506,7 @@
       }
       const m = pullHref.exec(pathname);
       if (!m) continue;
-      const li = a.closest("li");
+      const li = a.closest(ROW);
       if (li && !rows.has(m[1])) rows.set(m[1], li);
     }
     return rows;
