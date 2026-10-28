@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub PR list — Show opener avatar on the left, and reviewers instead of assignees on the right
 // @namespace    https://github.com/danieleformichelli/tampermonkey-scripts
-// @version      1.0.5
+// @version      1.0.6
 // @description  Show opener avatar on the left, reviewers in place of the assignees, and keep other people's drafts off unfiltered lists.
 // @author       Daniele Formichelli
 // @match        https://github.com/*
@@ -549,10 +549,10 @@
   }
 
   // ---- lifecycle ------------------------------------------------------------
-  // Off the PR list the script only listens for URL changes: no DOM observer, no stylesheet. The observer is attached on entering a PR list
-  // and disconnected on leaving it. Runs are batched to the next animation frame, which still comes before that frame paints, so rows
-  // GitHub renders show up already processed. run() is idempotent and only touches the DOM when something is missing, so it settles once
-  // the page stops changing.
+  // Off the PR list the script only listens for URL changes: no DOM observer, and the stylesheet is dropped as soon as the list it styles
+  // leaves the document. The observer is attached on entering a PR list and disconnected on leaving it. Runs are batched to the next
+  // animation frame, which still comes before that frame paints, so rows GitHub renders show up already processed. run() is idempotent and
+  // only touches the DOM when something is missing, so it settles once the page stops changing.
   let runFrame = null;
   function queueRun() {
     if (runFrame) return;
@@ -564,6 +564,38 @@
 
   let observer = null;
   let lastUrl = null;
+
+  // The URL changes before GitHub swaps the page content, so the stylesheet has to outlive the URL change: pulled while the list is still
+  // on screen, it takes the cell's `align-self: center` away — the avatars drop to the top of the metadata column, one avatar higher — and
+  // lets the assignees it hides reappear for the length of the navigation. It is dropped once the list leaves the document, which is the
+  // point where the next page's content is in place.
+  let styleRelease = null;
+  let styleReleaseTimer = null;
+  function stopStyleRelease() {
+    if (styleRelease) styleRelease.disconnect();
+    if (styleReleaseTimer) clearTimeout(styleReleaseTimer);
+    styleRelease = null;
+    styleReleaseTimer = null;
+  }
+  function releaseStyleWithList() {
+    if (styleRelease) return; // a pending release still covers this navigation
+    const list = document.querySelector('ul[data-listview-component="items-list"]');
+    if (!list) {
+      hideStyle.remove();
+      return;
+    }
+    const release = () => {
+      stopStyleRelease();
+      hideStyle.remove();
+    };
+    styleRelease = new MutationObserver(() => {
+      if (!list.isConnected) release();
+    });
+    styleRelease.observe(document.documentElement, { childList: true, subtree: true });
+    // the selectors target GitHub's shared list components, so a page that somehow keeps its list mounted still drops the stylesheet
+    styleReleaseTimer = setTimeout(release, 5000);
+  }
+
   function onUrlChange() {
     if (location.href === lastUrl) return;
     lastUrl = location.href;
@@ -573,6 +605,7 @@
       return;
     }
     if (PULLS_PATH.test(location.pathname)) {
+      stopStyleRelease();
       if (!hideStyle.isConnected) (document.head || document.documentElement).appendChild(hideStyle);
       if (!observer) {
         observer = new MutationObserver(queueRun);
@@ -580,12 +613,12 @@
         observer.observe(document.documentElement, { childList: true, subtree: true });
       }
       queueRun(); // the list may already be rendered, or render without further mutations
-    } else if (observer) {
-      observer.disconnect();
-      observer = null;
-      // its selectors target GitHub's shared list components, so left in place it would also hide assignees on e.g. the issues list, and
-      // cost style matching on every page after
-      hideStyle.remove();
+    } else {
+      if (observer) {
+        observer.disconnect();
+        observer = null;
+      }
+      if (hideStyle.isConnected) releaseStyleWithList();
       run(); // tidies up: forgets the last list URL
     }
   }
