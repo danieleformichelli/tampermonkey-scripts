@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         GitHub PR list — Show opener avatar on the left, and reviewers instead of assignees on the right
 // @namespace    https://github.com/danieleformichelli/tampermonkey-scripts
-// @version      1.0.7
-// @description  Show opener avatar on the left, reviewers in place of the assignees, and keep other people's drafts off unfiltered lists.
+// @version      1.0.8
+// @description  Show opener avatar on the left, reviewers in place of the assignees, and keep other people's drafts off the list.
 // @author       Daniele Formichelli
 // @match        https://github.com/*
 // @icon         https://github.githubassets.com/favicons/favicon.svg
@@ -57,13 +57,93 @@
     return true;
   }
 
-  function redirectUrlIfNeeded() {
-    const BARE_PULLS_PATH = /^\/[^/]+\/[^/]+\/pulls\/?$/;
-    if (!BARE_PULLS_PATH.test(location.pathname)) return null;
-    const url = new URL(location.href);
-    if (url.searchParams.get("q")) return null;
-    url.searchParams.set("q", "is:pr is:open (draft:false OR author:@me)");
-    return url.href;
+  // ---- drafts toggle ---------------------------------------------------------
+  // GitHub's own search hides drafts with a query in the URL, which is a page load; the list filters here instead, driven by a checkbox
+  // that sits in the filter bar ahead of the author picker. Off, it keeps the drafts I did not author off the list (the same rows
+  // GitHub's `draft:false OR author:@me` query drops); on, it shows every draft.
+  const DRAFT_ICON = '[class~="octicon-git-pull-request-draft"]';
+  const FILTER_BAR = 'div[role="toolbar"][aria-label="Pull request filters"]';
+  const AUTHOR_PICKER = 'button[aria-label="Filter by author"]';
+  const TOGGLE_ATTR = "data-gh-drafts-toggle";
+  const SHOW_DRAFTS_KEY = "gh-pr-show-drafts";
+  let showDrafts = false;
+  try {
+    showDrafts = localStorage.getItem(SHOW_DRAFTS_KEY) === "1";
+  } catch (err) {
+    // storage blocked: the toggle still works, it just starts off on every load
+  }
+
+  // an explicit draft search is the user's own filter, so it is left alone
+  function draftsFiltered() {
+    if (showDrafts) return false;
+    const q = new URL(location.href).searchParams.get("q") || "";
+    return !/(^|[\s(])is:draft|draft:(true|false)/i.test(q);
+  }
+
+  let myLogin = null;
+  function isOtherDraft(row) {
+    if (!row.querySelector(DRAFT_ICON)) return false;
+    const author = authorLogin(row);
+    if (!author) return false;
+    // until the page tells who I am, nothing is hidden rather than hiding my own drafts
+    if (!myLogin) myLogin = (document.querySelector('meta[name="user-login"]')?.content || "").toLowerCase();
+    return !!myLogin && author.toLowerCase() !== myLogin;
+  }
+
+  // returns false when the filter bar isn't there, i.e. when there is no way to bring the drafts back
+  function ensureDraftToggle() {
+    const bar = document.querySelector(FILTER_BAR);
+    if (!bar || !bar.querySelector(AUTHOR_PICKER)) return false;
+    // React re-renders the container the pickers live in when one of them opens or a filter is applied, and it adopts or moves this foreign
+    // node when it does: the toggle lives in the bar itself, ahead of everything GitHub renders there. A copy React moved around is dropped;
+    // one React rendered over is GitHub's own node now, so it only loses the marker
+    let toggle = null;
+    for (const el of document.querySelectorAll(`[${TOGGLE_ATTR}]`)) {
+      if (!el.querySelector('input[type="checkbox"]')) el.removeAttribute(TOGGLE_ATTR);
+      else if (!toggle && el.parentElement === bar) toggle = el;
+      else el.remove();
+    }
+    if (!toggle) {
+      toggle = document.createElement("label");
+      toggle.className = "gh-pr-drafts-toggle";
+      toggle.setAttribute(TOGGLE_ATTR, "");
+      toggle.title = "Show drafts from other people too (your own drafts always show)";
+      // the bar sets a heavier font than the picker labels: take the picker's own so the toggle reads as one of them
+      const ref = bar.querySelector(`${AUTHOR_PICKER} [data-component="text"]`) || bar.querySelector(AUTHOR_PICKER);
+      const font = getComputedStyle(ref);
+      Object.assign(toggle.style, {
+        display: "inline-flex",
+        alignItems: "center",
+        // the bar lays its items out from the top; its buttons are 32px tall with their label centred, so the toggle is centred too
+        alignSelf: "center",
+        gap: "6px",
+        margin: "0 4px",
+        fontFamily: font.fontFamily,
+        fontSize: font.fontSize,
+        fontWeight: font.fontWeight,
+        lineHeight: font.lineHeight,
+        color: font.color,
+        cursor: "pointer",
+        userSelect: "none",
+        whiteSpace: "nowrap",
+      });
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.style.margin = "0";
+      box.addEventListener("change", () => {
+        showDrafts = box.checked;
+        try {
+          localStorage.setItem(SHOW_DRAFTS_KEY, showDrafts ? "1" : "0");
+        } catch (err) {
+          /* storage blocked; the filter still applies */
+        }
+        queueRun();
+      });
+      toggle.append("Drafts", box);
+    }
+    toggle.querySelector("input").checked = showDrafts;
+    if (bar.firstElementChild !== toggle) bar.insertBefore(toggle, bar.firstElementChild);
+    return true;
   }
 
   // a stylesheet survives React replacing nodes or resetting the row's className, and applies from the first paint (the script runs at
@@ -74,8 +154,7 @@
   //   size holds its place, so the columns don't jump. Comfortable view has no columns, so the cell just fits its avatars, right-aligned
   // - switching layouts makes React append the new layout's metadata after our cell, so `order` keeps the cell last without moving the node
   // - the cell centres vertically like GitHub's own metadata items, so it lines up with the comment count in both layouts
-  // - an unfiltered list keeps showing everyone's drafts until the redirect to the filtered query lands (a page load), so those rows are
-  //   flagged with a class the stylesheet hides
+  // - rows the drafts toggle drops are flagged with a class the stylesheet hides
   const ROW = 'ul[data-listview-component="items-list"] > li';
   const COMPACT_ROW = `:is(ul[data-density="compact"] > li, li[class*="listItemCompact"])`;
   const hideStyle = document.createElement("style");
@@ -264,8 +343,8 @@
     if (paren) return paren[1];
     if (/^[\w-]+(?:\[bot])?$/.test(label)) return label;
     try {
-      // href is "...?q=is%3Apr+...author%3A<login>". The current search can already carry an author qualifier (e.g. the draft query's
-      // author:@me), so the row's author is the last one.
+      // href is "...?q=is%3Apr+...author%3A<login>". The current search can carry its own author qualifier, so the row's author is the
+      // last one.
       const q = decodeURIComponent(link.getAttribute("href") || "");
       const m = [...q.matchAll(/author:([\w-]+(?:\[bot])?)/g)].pop();
       if (m) return m[1];
@@ -288,7 +367,6 @@
     if (host.querySelector(":scope > .gh-pr-opener")) return;
     const login = authorLogin(row);
     if (!login) return;
-    // GitHub's own author href appends the qualifier to the current search, which now already carries one (the draft query's author:@me)
     const url = new URL(`/${owner}/${repo}/pulls`, location.origin);
     url.searchParams.set("q", `is:pr is:open sort:updated-desc author:${login}`);
 
@@ -515,20 +593,7 @@
     return rows;
   }
 
-  // an unfiltered list shows other people's drafts until the redirect to the filtered query lands, which is a page load: the rows that
-  // query would drop are hidden meanwhile, so the list on screen already matches what is about to load
-  const DRAFT_ICON = '[class~="octicon-git-pull-request-draft"]';
-  let myLogin = null;
-  function isOtherDraft(row) {
-    if (!row.querySelector(DRAFT_ICON)) return false;
-    const author = authorLogin(row);
-    if (!author) return false;
-    myLogin ??= (document.querySelector('meta[name="user-login"]')?.content || "").toLowerCase();
-    return !!myLogin && author.toLowerCase() !== myLogin;
-  }
-
   let lastHref = null;
-  let redirectPending = false; // the redirect to the filtered query is in flight, so the list on screen is still the unfiltered one
   function run() {
     if (!syncRepo()) {
       lastHref = null;
@@ -539,6 +604,8 @@
       lastHref = location.href;
       cache.clear();
     }
+    // no toggle on the page means no way to bring drafts back, so nothing is hidden
+    const hideDrafts = ensureDraftToggle() && draftsFiltered();
     const rows = collectRows();
     if (DEBUG) console.log("[gh-pr-reviewers] run: matched", rows.size, "PR row(s)", [...rows.keys()]);
     if (rows.size === 0 && DEBUG) {
@@ -548,10 +615,10 @@
       );
     }
     for (const [num, row] of rows) {
-      if (redirectPending && isOtherDraft(row)) {
-        row.classList.add("gh-pr-other-draft");
-        continue;
-      }
+      // a hidden row is left alone: it comes back through the next run when the toggle turns drafts on
+      const hidden = hideDrafts && isOtherDraft(row);
+      row.classList.toggle("gh-pr-other-draft", hidden);
+      if (hidden) continue;
       // flag the row (CSS hides its assignees instantly), then fill reviewers
       row.classList.add("gh-pr-reviewers-row");
       ensureCell(row, metadataContainer(row));
@@ -560,8 +627,6 @@
       const cached = cachedReviewers(num);
       if (cached) apply(row, cached); // paint last session's result instantly, refresh below
 
-      // the list is about to be replaced by the redirected one, so the fetch would only be thrown away
-      if (redirectPending) continue;
       schedule(() =>
         fetchReviewers(num).then((reviewers) => {
           if (reviewers !== null && row.isConnected) apply(row, reviewers);
@@ -621,11 +686,6 @@
   function onUrlChange() {
     if (location.href === lastUrl) return;
     lastUrl = location.href;
-    const redirectUrl = redirectUrlIfNeeded();
-    // the redirect is a page load, so keep treating the list GitHub already rendered as a PR list: its other people's drafts are hidden
-    // until the filtered one commits
-    redirectPending = redirectUrl !== null;
-    if (redirectUrl) location.replace(redirectUrl);
     if (PULLS_PATH.test(location.pathname)) {
       stopStyleRelease();
       if (!hideStyle.isConnected) (document.head || document.documentElement).appendChild(hideStyle);
