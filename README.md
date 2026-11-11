@@ -8,6 +8,7 @@ Collection of Tampermonkey scripts.
 2. Right-click the Tampermonkey icon → **Manage extension** → enable **Allow User Scripts**.
 3. Click the link of the script you want to install
    1. [github-pr-list](https://www.tampermonkey.net/script_installation.php#url=https://github.com/danieleformichelli/tampermonkey-scripts/raw/refs/heads/main/github-pr-list.user.js)
+   2. [github-pr-notion-link](https://www.tampermonkey.net/script_installation.php#url=https://github.com/danieleformichelli/tampermonkey-scripts/raw/refs/heads/main/github-pr-notion-link.user.js)
 4. Install
 5. Enjoy!
 
