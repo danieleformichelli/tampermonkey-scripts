@@ -139,7 +139,7 @@
     for (const id of menuIds) GM_unregisterMenuCommand(id);
     menuIds = Object.entries(SETTINGS).map(([key, { label }]) =>
       // the click reads the stored value afresh rather than the one the label was built from, which another tab may have changed since
-      GM_registerMenuCommand(`${setting(key) ? "☑" : "☐"} ${label}`, () => GM_setValue(key, !setting(key))),
+      GM_registerMenuCommand(`${setting(key) ? "✅" : "❌"} ${label}`, () => GM_setValue(key, !setting(key))),
     );
   }
   registerMenu();
